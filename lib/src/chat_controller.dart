@@ -9,7 +9,6 @@ class ChatController extends ChangeNotifier {
   final HermesApi api;
   List<HermesSession> sessions = const [];
   List<ChatMessage> messages = const [];
-  List<ChatEvent> events = const [];
   HermesSession? selected;
   bool loading = false;
   bool sending = false;
@@ -47,7 +46,6 @@ class ChatController extends ChangeNotifier {
     selected = session;
     loading = true;
     error = null;
-    events = const [];
     notifyListeners();
     try {
       messages = await api.messages(session.id);
@@ -64,7 +62,6 @@ class ChatController extends ChangeNotifier {
     final clean = text.trim();
     if (session == null || clean.isEmpty || sending) return;
     messages = [...messages, ChatMessage(role: 'user', text: clean)];
-    events = const [];
     sending = true;
     error = null;
     var response = '';
@@ -91,7 +88,7 @@ class ChatController extends ChangeNotifier {
               ChatMessage(role: '_draft', text: response),
             ];
           case ToolUpdate(:final event):
-            events = [...events, event];
+            messages = [...messages, ChatMessage.tool(event)];
         }
         notifyListeners();
       }
@@ -102,6 +99,10 @@ class ChatController extends ChangeNotifier {
         ];
       } else {
         messages = await api.messages(session.id);
+      }
+      if (session.title == 'Untitled session') {
+        final title = _titleFromFirstMessage(clean);
+        await api.updateSessionTitle(session.id, title);
       }
       await loadSessions();
     } catch (exception) {
@@ -118,4 +119,10 @@ class ChatController extends ChangeNotifier {
     api.close();
     super.dispose();
   }
+}
+
+String _titleFromFirstMessage(String message) {
+  final normalized = message.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.length <= 48) return normalized;
+  return '${normalized.substring(0, 47).trimRight()}…';
 }

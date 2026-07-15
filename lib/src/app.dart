@@ -452,17 +452,13 @@ class _ChatPaneState extends State<ChatPane> {
               padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
               children: [
                 ...controller.messages.map(
-                  (message) => MessageBubble(message: message),
+                  (message) => message.event == null
+                      ? MessageBubble(message: message)
+                      : Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: ToolEventTile(event: message.event!),
+                        ),
                 ),
-                if (controller.events.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Column(
-                      children: controller.events
-                          .map((event) => ToolEventTile(event: event))
-                          .toList(),
-                    ),
-                  ),
                 if (controller.sending)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 10),

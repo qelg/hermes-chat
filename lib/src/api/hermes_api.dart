@@ -80,6 +80,15 @@ class HermesApi {
     );
   }
 
+  Future<void> updateSessionTitle(String sessionId, String title) async {
+    final response = await _client.patch(
+      _uri('/api/sessions/${Uri.encodeComponent(sessionId)}'),
+      headers: _headers,
+      body: jsonEncode({'title': title}),
+    );
+    _ensureSuccess(response);
+  }
+
   Future<List<ChatMessage>> messages(String sessionId) async {
     final response = await _client.get(
       _uri('/api/sessions/${Uri.encodeComponent(sessionId)}/messages'),
@@ -92,8 +101,9 @@ class HermesApi {
         : (decoded['messages'] ?? decoded['data'] ?? const []);
     return (raw as List)
         .whereType<Map>()
-        .map((item) => ChatMessage.fromJson(item.cast<String, dynamic>()))
-        .where((message) => message.text.isNotEmpty)
+        .expand(
+          (item) => ChatMessage.fromJsonMany(item.cast<String, dynamic>()),
+        )
         .toList(growable: false);
   }
 
