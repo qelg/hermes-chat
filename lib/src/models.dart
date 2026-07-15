@@ -59,10 +59,14 @@ class ChatEvent {
 enum ChatEventKind { tool, status }
 
 class ChatMessage {
-  const ChatMessage({required this.role, required this.text});
+  const ChatMessage({required this.role, required this.text, this.event});
+
+  factory ChatMessage.tool(ChatEvent event) =>
+      ChatMessage(role: '_tool', text: '', event: event);
 
   final String role;
   final String text;
+  final ChatEvent? event;
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final role = (json['role'] ?? 'assistant').toString();
@@ -80,5 +84,58 @@ class ChatMessage {
       text = raw.toString();
     }
     return ChatMessage(role: role, text: text);
+  }
+
+  static List<ChatMessage> fromJsonMany(Map<String, dynamic> json) {
+    final role = (json['role'] ?? 'assistant').toString();
+    if (role == 'tool') {
+      return [
+        ChatMessage.tool(
+          ChatEvent.tool(
+            type: 'tool.completed',
+            payload: {
+              'tool_call_id': json['tool_call_id'],
+              'tool_name': json['tool_name'] ?? json['name'] ?? 'tool',
+              'result': json['content'] ?? json['text'] ?? '',
+            },
+          ),
+        ),
+      ];
+    }
+
+    final result = <ChatMessage>[];
+    final message = ChatMessage.fromJson(json);
+    if (message.text.isNotEmpty) result.add(message);
+
+    final toolCalls = json['tool_calls'];
+    if (toolCalls is List) {
+      for (final rawCall in toolCalls.whereType<Map>()) {
+        final call = rawCall.cast<String, dynamic>();
+        final function = call['function'] is Map
+            ? (call['function'] as Map).cast<String, dynamic>()
+            : const <String, dynamic>{};
+        dynamic arguments = function['arguments'] ?? call['arguments'];
+        if (arguments is String) {
+          try {
+            arguments = jsonDecode(arguments);
+          } on FormatException {
+            // Preserve non-JSON arguments as text in the expandable details.
+          }
+        }
+        result.add(
+          ChatMessage.tool(
+            ChatEvent.tool(
+              type: 'tool.started',
+              payload: {
+                'tool_call_id': call['id'],
+                'tool_name': function['name'] ?? call['name'] ?? 'tool',
+                'args': arguments,
+              },
+            ),
+          ),
+        );
+      }
+    }
+    return result;
   }
 }

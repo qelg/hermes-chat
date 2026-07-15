@@ -37,6 +37,32 @@ void main() {
   });
 
   test(
+    'restores tool calls in their persisted chronological positions',
+    () async {
+      final api = HermesApi(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'token'),
+        client: _StreamClient('''{"object":"list","data":[
+          {"role":"user","content":"Check it"},
+          {"role":"assistant","content":"","tool_calls":[{"id":"call-1","function":{"name":"terminal","arguments":"{\\"command\\":\\"date\\"}"}}]},
+          {"role":"tool","tool_call_id":"call-1","tool_name":"terminal","content":"{\\"output\\":\\"ok\\"}"},
+          {"role":"assistant","content":"Done"}
+        ]}''', contentType: 'application/json'),
+      );
+
+      final messages = await api.messages('session-1');
+
+      expect(messages.map((message) => message.role), [
+        'user',
+        '_tool',
+        '_tool',
+        'assistant',
+      ]);
+      expect(messages[1].event!.summary, 'terminal · started');
+      expect(messages[2].event!.summary, 'terminal · completed');
+    },
+  );
+
+  test(
     'session stream exposes final assistant content even without deltas',
     () async {
       final client = _StreamClient('''
