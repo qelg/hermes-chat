@@ -81,6 +81,15 @@ class ChatController extends ChangeNotifier {
               ...withoutDraft,
               ChatMessage(role: '_draft', text: response),
             ];
+          case CompletedText(:final text):
+            response = text;
+            final withoutDraft = messages
+                .where((m) => m.role != '_draft')
+                .toList();
+            messages = [
+              ...withoutDraft,
+              ChatMessage(role: '_draft', text: response),
+            ];
           case ToolUpdate(:final event):
             events = [...events, event];
         }

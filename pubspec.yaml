@@ -1,7 +1,7 @@
 name: hermes_chat
 description: A focused cross-platform client for Hermes Agent.
 publish_to: none
-version: 0.1.0+1
+version: 0.1.1+2
 
 environment:
   sdk: ^3.12.0

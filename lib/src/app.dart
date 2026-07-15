@@ -390,9 +390,12 @@ class MobileChatPage extends StatelessWidget {
   final ChatController controller;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(controller.selected?.title ?? 'Hermes')),
-    body: ChatPane(controller: controller),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => Scaffold(
+      appBar: AppBar(title: Text(controller.selected?.title ?? 'Hermes')),
+      body: ChatPane(controller: controller),
+    ),
   );
 }
 
