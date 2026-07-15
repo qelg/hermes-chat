@@ -16,6 +16,11 @@ class TextDelta extends StreamUpdate {
   final String text;
 }
 
+class CompletedText extends StreamUpdate {
+  const CompletedText(this.text);
+  final String text;
+}
+
 class ToolUpdate extends StreamUpdate {
   const ToolUpdate(this.event);
   final ChatEvent event;
@@ -52,7 +57,10 @@ class HermesApi {
     final decoded = jsonDecode(response.body);
     final raw = decoded is List
         ? decoded
-        : (decoded['sessions'] ?? decoded['items'] ?? const []);
+        : (decoded['sessions'] ??
+              decoded['items'] ??
+              decoded['data'] ??
+              const []);
     return (raw as List)
         .whereType<Map>()
         .map((item) => HermesSession.fromJson(item.cast<String, dynamic>()))
@@ -79,7 +87,9 @@ class HermesApi {
     );
     _ensureSuccess(response);
     final decoded = jsonDecode(response.body);
-    final raw = decoded is List ? decoded : (decoded['messages'] ?? const []);
+    final raw = decoded is List
+        ? decoded
+        : (decoded['messages'] ?? decoded['data'] ?? const []);
     return (raw as List)
         .whereType<Map>()
         .map((item) => ChatMessage.fromJson(item.cast<String, dynamic>()))
@@ -138,6 +148,20 @@ class HermesApi {
         if (text != null) return TextDelta(text.toString());
       }
     }
+    if (event.type == 'assistant.completed' && payload is Map) {
+      final text = payload['content'];
+      if (text is String && text.isNotEmpty) return CompletedText(text);
+    }
+    if (event.type == 'error') {
+      final message = payload is Map
+          ? payload['message']?.toString()
+          : payload.toString();
+      throw HermesStreamException(
+        message == null || message.isEmpty
+            ? 'Unknown streaming error'
+            : message,
+      );
+    }
     if (event.type.startsWith('tool.') ||
         event.type == 'response.output_item.added' ||
         event.type == 'response.output_item.done') {
@@ -169,4 +193,12 @@ class HermesApiException implements Exception {
 
   @override
   String toString() => 'Hermes API returned $statusCode: $body';
+}
+
+class HermesStreamException implements Exception {
+  const HermesStreamException(this.message);
+  final String message;
+
+  @override
+  String toString() => 'Hermes stream failed: $message';
 }
