@@ -13,6 +13,7 @@ class ChatController extends ChangeNotifier {
   }) : _elapsed = elapsed ?? _startClock() {
     _reconnectionSubscription = api.reconnections.listen(
       (_) => unawaited(refreshHistory()),
+      onError: (_) {},
     );
   }
 
@@ -26,11 +27,16 @@ class ChatController extends ChangeNotifier {
   final Duration refreshInterval;
   Timer? _refreshTimer;
   bool _refreshing = false;
-  bool _refreshQueued = false;
+  String? _queuedRefreshSessionId;
+  int? _queuedRefreshRevision;
   bool _disposed = false;
   int _timelineRevision = 0;
+  int _sendGeneration = 0;
+  final Set<String> _activeSendSessions = <String>{};
   late final StreamSubscription<void> _reconnectionSubscription;
   List<ChatMessage> _pendingPersistence = const [];
+  String? _pendingApprovalSessionId;
+  int? _pendingApprovalGeneration;
   List<HermesSession> sessions = const [];
   List<ChatMessage> messages = const [];
   HermesSession? selected;
@@ -46,20 +52,35 @@ class ChatController extends ChangeNotifier {
     if (!_disposed) super.notifyListeners();
   }
 
-  Future<void> loadSessions() async {
+  Future<void> loadSessions({
+    int? expectedRevision,
+    String? expectedSessionId,
+  }) async {
+    final revision = expectedRevision ?? _timelineRevision;
+    final sessionId = expectedSessionId ?? selected?.id;
+    bool isCurrent() =>
+        !_disposed &&
+        revision == _timelineRevision &&
+        selected?.id == sessionId;
+    if (!isCurrent()) return;
     loading = true;
     error = null;
     notifyListeners();
     try {
-      sessions = await api.listSessions();
+      final loaded = await api.listSessions();
+      if (!isCurrent()) return;
+      sessions = loaded;
       if (selected != null) {
         selected = sessions.where((s) => s.id == selected!.id).firstOrNull;
       }
     } catch (exception) {
+      if (!isCurrent()) return;
       error = exception.toString();
     } finally {
-      loading = false;
-      notifyListeners();
+      if (isCurrent()) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -77,14 +98,39 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> select(HermesSession session) async {
+    final previousSession = selected;
+    if (previousSession?.id == session.id &&
+        _activeSendSessions.contains(session.id)) {
+      selected = session;
+      notifyListeners();
+      return;
+    }
     _refreshTimer?.cancel();
     _pendingPersistence = const [];
+    pendingApproval = null;
+    _pendingApprovalSessionId = null;
+    _pendingApprovalGeneration = null;
+    _sendGeneration++;
+    sending = _activeSendSessions.contains(session.id);
     _timelineRevision++;
     final revision = _timelineRevision;
     selected = session;
     loading = true;
     error = null;
     notifyListeners();
+    if (previousSession != null &&
+        previousSession.id != session.id &&
+        _activeSendSessions.contains(previousSession.id)) {
+      try {
+        await api.interrupt(previousSession.id);
+      } catch (exception) {
+        if (!_disposed &&
+            revision == _timelineRevision &&
+            selected?.id == session.id) {
+          error = exception.toString();
+        }
+      }
+    }
     try {
       final loaded = await api.messages(session.id);
       if (!_disposed &&
@@ -114,7 +160,10 @@ class ChatController extends ChangeNotifier {
     final session = selected;
     if (_disposed || session == null || (sending && !force)) return;
     if (_refreshing) {
-      if (force) _refreshQueued = true;
+      if (force) {
+        _queuedRefreshSessionId = session.id;
+        _queuedRefreshRevision = _timelineRevision;
+      }
       return;
     }
     final revision = _timelineRevision;
@@ -133,8 +182,14 @@ class ChatController extends ChangeNotifier {
       // Periodic reconciliation is best-effort and retries on the next tick.
     } finally {
       _refreshing = false;
-      if (_refreshQueued && !_disposed) {
-        _refreshQueued = false;
+      final queuedSessionId = _queuedRefreshSessionId;
+      final queuedRevision = _queuedRefreshRevision;
+      _queuedRefreshSessionId = null;
+      _queuedRefreshRevision = null;
+      if (!_disposed &&
+          queuedSessionId != null &&
+          selected?.id == queuedSessionId &&
+          _timelineRevision == queuedRevision) {
         unawaited(refreshHistory(force: true));
       }
     }
@@ -207,8 +262,20 @@ class ChatController extends ChangeNotifier {
   Future<void> send(String text) async {
     final session = selected;
     final clean = text.trim();
-    if (session == null || clean.isEmpty || sending) return;
+    if (session == null ||
+        clean.isEmpty ||
+        _activeSendSessions.contains(session.id)) {
+      return;
+    }
+    final sendGeneration = ++_sendGeneration;
+    _activeSendSessions.add(session.id);
     _timelineRevision++;
+    final revision = _timelineRevision;
+    bool isCurrentSession() =>
+        !_disposed &&
+        sendGeneration == _sendGeneration &&
+        revision == _timelineRevision &&
+        selected?.id == session.id;
     messages = [...messages, ChatMessage(role: 'user', text: clean)];
     sending = true;
     error = null;
@@ -258,6 +325,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     try {
       await for (final update in api.chat(session.id, clean)) {
+        if (!isCurrentSession()) continue;
         switch (update) {
           case HistoryUpdate(:final messages):
             this.messages = [
@@ -323,9 +391,12 @@ class ChatController extends ChangeNotifier {
             messages = [...messages, ChatMessage.tool(timedEvent)];
           case ApprovalUpdate(:final request):
             pendingApproval = request;
+            _pendingApprovalSessionId = session.id;
+            _pendingApprovalGeneration = sendGeneration;
         }
         notifyListeners();
       }
+      if (!isCurrentSession()) return;
       if (toolStarts.isNotEmpty) finishPendingTools('cancelled');
       if (response.isNotEmpty) {
         messages = [
@@ -338,7 +409,9 @@ class ChatController extends ChangeNotifier {
           ),
         ];
       } else if (!receivedTool) {
-        messages = await api.messages(session.id);
+        final canonical = await api.messages(session.id);
+        if (!isCurrentSession()) return;
+        messages = canonical;
       }
       if (completed) {
         _pendingPersistence = messages
@@ -349,8 +422,13 @@ class ChatController extends ChangeNotifier {
             .toList(growable: false);
         await refreshHistory(force: true);
       }
-      await loadSessions();
+      if (!isCurrentSession()) return;
+      await loadSessions(
+        expectedRevision: revision,
+        expectedSessionId: session.id,
+      );
     } catch (exception) {
+      if (!isCurrentSession()) return;
       finishPendingTools('failed');
       final withoutDraft = messages.where((m) => m.role != '_draft').toList();
       messages = [
@@ -364,18 +442,35 @@ class ChatController extends ChangeNotifier {
       ];
       error = exception.toString();
     } finally {
-      sending = false;
-      notifyListeners();
+      _activeSendSessions.remove(session.id);
+      if (selected?.id == session.id) {
+        sending = _activeSendSessions.contains(session.id);
+        notifyListeners();
+      }
     }
   }
 
   Future<void> respondApproval(String choice) async {
     final request = pendingApproval;
     if (request == null) return;
+    final sessionId = _pendingApprovalSessionId;
+    final generation = _pendingApprovalGeneration;
+    bool isCurrentApproval() =>
+        !_disposed &&
+        identical(pendingApproval, request) &&
+        sessionId != null &&
+        selected?.id == sessionId &&
+        generation == _sendGeneration &&
+        generation == _pendingApprovalGeneration;
+    if (!isCurrentApproval()) return;
     try {
       await api.respondApproval(request, choice);
+      if (!isCurrentApproval()) return;
       pendingApproval = null;
+      _pendingApprovalSessionId = null;
+      _pendingApprovalGeneration = null;
     } catch (exception) {
+      if (!isCurrentApproval()) return;
       error = exception.toString();
     }
     notifyListeners();

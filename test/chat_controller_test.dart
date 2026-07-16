@@ -108,6 +108,48 @@ void main() {
     },
   );
 
+  test(
+    'a queued refresh cannot move to another session and erase its live turn',
+    () async {
+      final api = _QueuedRefreshSessionSwitchApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(id: 'first', title: 'First')
+        ..messages = const [
+          ChatMessage(
+            role: 'assistant',
+            text: 'First history',
+            persistedId: '1',
+          ),
+        ];
+
+      final firstRefresh = controller.refreshHistory();
+      await api.firstRefreshStarted.future;
+      await controller.send('Question for first');
+      await controller.select(
+        const HermesSession(id: 'second', title: 'Second'),
+      );
+
+      final secondSend = controller.send('Question for second');
+      await api.secondStreamStarted.future;
+      api.releaseFirstRefresh.complete(const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ]);
+      await firstRefresh;
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(api.secondHistoryCalls, 1);
+      expect(controller.messages.map((message) => message.text), [
+        'Second history',
+        'Question for second',
+      ]);
+
+      api.releaseSecondStream.complete();
+      await secondSend;
+      controller.dispose();
+    },
+  );
+
   test('select ignores stale history from a previous session', () async {
     final api = _DeferredHistoryApi();
     final controller = ChatController(api);
@@ -127,6 +169,26 @@ void main() {
     expect(controller.selected, second);
     expect(controller.loading, isFalse);
     expect(controller.messages.single.text, 'Second history');
+    controller.dispose();
+  });
+
+  test('session reload ignores a list made stale by selection', () async {
+    final api = _StaleSessionListApi();
+    const first = HermesSession(id: 'first', title: 'First');
+    const second = HermesSession(id: 'second', title: 'Second');
+    final controller = ChatController(api)
+      ..selected = first
+      ..sessions = const [first, second];
+
+    final reload = controller.loadSessions();
+    await api.listRequested.future;
+    await controller.select(second);
+    api.releaseList.complete(const [first]);
+    await reload;
+
+    expect(controller.selected, second);
+    expect(controller.sessions, contains(second));
+    expect(controller.loading, isFalse);
     controller.dispose();
   });
 
@@ -174,6 +236,214 @@ void main() {
     ]);
     controller.dispose();
   });
+
+  test('disconnect errors do not prevent reconnect reconciliation', () async {
+    final api = _ReconnectApi();
+    final uncaught = <Object>[];
+
+    await runZonedGuarded(() async {
+      final controller = ChatController(api)
+        ..selected = const HermesSession(
+          id: 'session-1',
+          title: 'Existing session',
+        )
+        ..messages = const [ChatMessage(role: 'assistant', text: 'Initial')];
+      api.emitDisconnectError();
+      await Future<void>.delayed(Duration.zero);
+
+      api.history = const [
+        ChatMessage(role: 'assistant', text: 'Initial'),
+        ChatMessage(role: 'user', text: 'After reconnect'),
+      ];
+      api.emitReconnect();
+      await api.refreshObserved.future;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.messages.last.text, 'After reconnect');
+      controller.dispose();
+    }, (error, _) => uncaught.add(error));
+
+    expect(uncaught, isEmpty);
+  });
+
+  test('switching sessions while sending cannot mutate the new chat', () async {
+    final api = _SessionSwitchDuringSendApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First')
+      ..messages = const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ];
+
+    final sending = controller.send('Question for first');
+    await api.streamStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    api.releaseStream.complete();
+    await sending;
+
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.map((message) => message.text), [
+      'Second history',
+    ]);
+    controller.dispose();
+  });
+
+  test('obsolete send cannot reconcile sessions after a switch', () async {
+    final api = _SwitchDuringFinalReconciliationApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First')
+      ..messages = const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ];
+
+    final sending = controller.send('Question for first');
+    await api.finalRefreshStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    api.releaseFinalRefresh.complete(const [
+      ChatMessage(role: 'user', text: 'Question for first', persistedId: '2'),
+      ChatMessage(role: 'assistant', text: 'First reply', persistedId: '3'),
+    ]);
+    await sending;
+
+    expect(api.listSessionsCalls, 0);
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.map((message) => message.text), [
+      'Second history',
+    ]);
+    controller.dispose();
+  });
+
+  test('switching sessions releases send ownership for the new chat', () async {
+    final api = _SendOwnershipApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First');
+
+    final firstSend = controller.send('Question for first');
+    await api.firstStreamStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    final secondSend = controller.send('Question for second');
+    await api.secondStreamStarted.future;
+    api.releaseFirstStream.complete();
+    await firstSend;
+
+    expect(controller.sending, isTrue);
+    api.releaseSecondStream.complete();
+    await secondSend;
+
+    expect(api.sentSessions, ['first', 'second']);
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.last.text, 'Second reply');
+    expect(controller.sending, isFalse);
+    controller.dispose();
+  });
+
+  test('switching away and back cannot start a duplicate send', () async {
+    final api = _SendOwnershipApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First');
+
+    final firstSend = controller.send('First question');
+    await api.firstStreamStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    await controller.select(const HermesSession(id: 'first', title: 'First'));
+
+    expect(controller.sending, isTrue);
+    await controller.send('Duplicate question');
+    expect(api.sentSessions, ['first']);
+
+    api.releaseFirstStream.complete();
+    await firstSend;
+    expect(controller.sending, isFalse);
+    controller.dispose();
+  });
+
+  test('switching sessions clears an approval from the old chat', () async {
+    final api = _ApprovalDuringSwitchApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First');
+
+    final sending = controller.send('Run command');
+    await api.approvalEmitted.future;
+    expect(controller.pendingApproval?.command, 'sudo true');
+
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    expect(controller.pendingApproval, isNull);
+    await controller.respondApproval('once');
+    expect(api.approvalChoices, isEmpty);
+
+    if (!api.releaseStream.isCompleted) api.releaseStream.complete();
+    await sending;
+    controller.dispose();
+  });
+
+  test(
+    'switching away cancels an approval-gated send before returning',
+    () async {
+      final api = _ApprovalDuringSwitchApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(id: 'first', title: 'First');
+
+      final sending = controller.send('Run command');
+      await api.approvalEmitted.future;
+
+      await controller.select(
+        const HermesSession(id: 'second', title: 'Second'),
+      );
+      await sending;
+      await controller.select(const HermesSession(id: 'first', title: 'First'));
+
+      expect(api.interruptedSessions, ['first']);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.sending, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'reselecting an approval-gated session keeps its send actionable',
+    () async {
+      final api = _ApprovalDuringSwitchApi();
+      const session = HermesSession(id: 'first', title: 'First');
+      final controller = ChatController(api)..selected = session;
+
+      final sending = controller.send('Run command');
+      await api.approvalEmitted.future;
+      await controller.select(session);
+
+      expect(controller.pendingApproval?.command, 'sudo true');
+      expect(controller.sending, isTrue);
+      expect(api.interruptedSessions, isEmpty);
+      api.releaseStream.complete();
+      await sending;
+      controller.dispose();
+    },
+  );
+
+  test(
+    'an old approval response cannot surface an error in a new chat',
+    () async {
+      final api = _ApprovalDuringSwitchApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(id: 'first', title: 'First');
+
+      final sending = controller.send('Run command');
+      await api.approvalEmitted.future;
+      final responding = controller.respondApproval('once');
+      await api.approvalResponseStarted.future;
+
+      await controller.select(
+        const HermesSession(id: 'second', title: 'Second'),
+      );
+      api.releaseApprovalResponse.completeError(Exception('late failure'));
+      await responding;
+
+      expect(controller.selected?.id, 'second');
+      expect(controller.pendingApproval, isNull);
+      expect(controller.error, isNull);
+      if (!api.releaseStream.isCompleted) api.releaseStream.complete();
+      await sending;
+      controller.dispose();
+    },
+  );
 
   test('tool events remain in chronological order across turns', () async {
     final api = _ConversationApi();
@@ -545,6 +815,30 @@ class _DeferredHistoryApi extends HermesApi {
   void close() {}
 }
 
+class _StaleSessionListApi extends HermesApi {
+  _StaleSessionListApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final listRequested = Completer<void>();
+  final releaseList = Completer<List<HermesSession>>();
+
+  @override
+  Future<List<HermesSession>> listSessions() {
+    listRequested.complete();
+    return releaseList.future;
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async => const [
+    ChatMessage(role: 'assistant', text: 'Second history', persistedId: '2'),
+  ];
+
+  @override
+  void close() {}
+}
+
 class _ReconnectApi extends HermesApi {
   _ReconnectApi()
     : super(
@@ -560,6 +854,10 @@ class _ReconnectApi extends HermesApi {
 
   void emitReconnect() => reconnectController.add(null);
 
+  void emitDisconnectError() {
+    reconnectController.addError(Exception('disconnected'));
+  }
+
   @override
   Future<List<ChatMessage>> messages(String sessionId) async {
     if (!refreshObserved.isCompleted) refreshObserved.complete();
@@ -570,6 +868,235 @@ class _ReconnectApi extends HermesApi {
   void close() {
     unawaited(reconnectController.close());
   }
+}
+
+class _SessionSwitchDuringSendApi extends HermesApi {
+  _SessionSwitchDuringSendApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final streamStarted = Completer<void>();
+  final releaseStream = Completer<void>();
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const HistoryUpdate([
+      ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+    ]);
+    streamStarted.complete();
+    await releaseStream.future;
+    yield const CompletedText('Late reply for first');
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(
+    String sessionId,
+  ) async => switch (sessionId) {
+    'first' => const [
+      ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+    ],
+    _ => const [
+      ChatMessage(role: 'assistant', text: 'Second history', persistedId: '2'),
+    ],
+  };
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _QueuedRefreshSessionSwitchApi extends HermesApi {
+  _QueuedRefreshSessionSwitchApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final firstRefreshStarted = Completer<void>();
+  final releaseFirstRefresh = Completer<List<ChatMessage>>();
+  final secondStreamStarted = Completer<void>();
+  final releaseSecondStream = Completer<void>();
+  var secondHistoryCalls = 0;
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    if (sessionId == 'first') {
+      yield const CompletedText('First reply');
+      return;
+    }
+    secondStreamStarted.complete();
+    await releaseSecondStream.future;
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async {
+    if (sessionId == 'first') {
+      if (!firstRefreshStarted.isCompleted) firstRefreshStarted.complete();
+      return releaseFirstRefresh.future;
+    }
+    secondHistoryCalls += 1;
+    if (secondHistoryCalls == 1) {
+      return const [
+        ChatMessage(
+          role: 'assistant',
+          text: 'Second history',
+          persistedId: '2',
+        ),
+      ];
+    }
+    return const [
+      ChatMessage(role: 'assistant', text: 'Second old', persistedId: '2'),
+    ];
+  }
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _SwitchDuringFinalReconciliationApi extends HermesApi {
+  _SwitchDuringFinalReconciliationApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final finalRefreshStarted = Completer<void>();
+  final releaseFinalRefresh = Completer<List<ChatMessage>>();
+  var listSessionsCalls = 0;
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const CompletedText('First reply');
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) {
+    if (sessionId == 'second') {
+      return Future.value(const [
+        ChatMessage(
+          role: 'assistant',
+          text: 'Second history',
+          persistedId: '4',
+        ),
+      ]);
+    }
+    if (!finalRefreshStarted.isCompleted) finalRefreshStarted.complete();
+    return releaseFinalRefresh.future;
+  }
+
+  @override
+  Future<List<HermesSession>> listSessions() async {
+    listSessionsCalls += 1;
+    return const [HermesSession(id: 'first', title: 'First')];
+  }
+
+  @override
+  void close() {}
+}
+
+class _SendOwnershipApi extends HermesApi {
+  _SendOwnershipApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final firstStreamStarted = Completer<void>();
+  final releaseFirstStream = Completer<void>();
+  final secondStreamStarted = Completer<void>();
+  final releaseSecondStream = Completer<void>();
+  final sentSessions = <String>[];
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    sentSessions.add(sessionId);
+    if (sessionId == 'first') {
+      firstStreamStarted.complete();
+      await releaseFirstStream.future;
+      yield const CompletedText('Late first reply');
+    } else {
+      secondStreamStarted.complete();
+      await releaseSecondStream.future;
+      yield const CompletedText('Second reply');
+    }
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(
+    String sessionId,
+  ) async => switch (sessionId) {
+    'first' => const [],
+    _ => const [
+      ChatMessage(role: 'assistant', text: 'Second history', persistedId: '1'),
+      ChatMessage(role: 'user', text: 'Question for second', persistedId: '2'),
+      ChatMessage(role: 'assistant', text: 'Second reply', persistedId: '3'),
+    ],
+  };
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _ApprovalDuringSwitchApi extends HermesApi {
+  _ApprovalDuringSwitchApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final approvalEmitted = Completer<void>();
+  final releaseStream = Completer<void>();
+  final approvalResponseStarted = Completer<void>();
+  final releaseApprovalResponse = Completer<void>();
+  final approvalChoices = <String>[];
+  final interruptedSessions = <String>[];
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const ApprovalUpdate(
+      ApprovalRequest(
+        sessionId: 'runtime-first',
+        command: 'sudo true',
+        description: 'Run command',
+        allowPermanent: true,
+      ),
+    );
+    approvalEmitted.complete();
+    await releaseStream.future;
+  }
+
+  @override
+  Future<void> respondApproval(ApprovalRequest request, String choice) async {
+    approvalChoices.add(choice);
+    approvalResponseStarted.complete();
+    await releaseApprovalResponse.future;
+  }
+
+  @override
+  Future<void> interrupt(String sessionId) async {
+    interruptedSessions.add(sessionId);
+    if (!releaseStream.isCompleted) releaseStream.complete();
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async => const [];
+
+  @override
+  void close() {}
 }
 
 class _InterleavedConversationApi extends HermesApi {
