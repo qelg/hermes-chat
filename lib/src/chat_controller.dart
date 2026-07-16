@@ -31,8 +31,11 @@ class ChatController extends ChangeNotifier {
   bool _disposed = false;
   int _timelineRevision = 0;
   int _sendGeneration = 0;
+  final Set<String> _activeSendSessions = <String>{};
   late final StreamSubscription<void> _reconnectionSubscription;
   List<ChatMessage> _pendingPersistence = const [];
+  String? _pendingApprovalSessionId;
+  int? _pendingApprovalGeneration;
   List<HermesSession> sessions = const [];
   List<ChatMessage> messages = const [];
   HermesSession? selected;
@@ -52,10 +55,12 @@ class ChatController extends ChangeNotifier {
     int? expectedRevision,
     String? expectedSessionId,
   }) async {
+    final revision = expectedRevision ?? _timelineRevision;
+    final sessionId = expectedSessionId ?? selected?.id;
     bool isCurrent() =>
         !_disposed &&
-        (expectedRevision == null || expectedRevision == _timelineRevision) &&
-        (expectedSessionId == null || selected?.id == expectedSessionId);
+        revision == _timelineRevision &&
+        selected?.id == sessionId;
     if (!isCurrent()) return;
     loading = true;
     error = null;
@@ -94,8 +99,11 @@ class ChatController extends ChangeNotifier {
   Future<void> select(HermesSession session) async {
     _refreshTimer?.cancel();
     _pendingPersistence = const [];
+    pendingApproval = null;
+    _pendingApprovalSessionId = null;
+    _pendingApprovalGeneration = null;
     _sendGeneration++;
-    sending = false;
+    sending = _activeSendSessions.contains(session.id);
     _timelineRevision++;
     final revision = _timelineRevision;
     selected = session;
@@ -224,8 +232,13 @@ class ChatController extends ChangeNotifier {
   Future<void> send(String text) async {
     final session = selected;
     final clean = text.trim();
-    if (session == null || clean.isEmpty || sending) return;
+    if (session == null ||
+        clean.isEmpty ||
+        _activeSendSessions.contains(session.id)) {
+      return;
+    }
     final sendGeneration = ++_sendGeneration;
+    _activeSendSessions.add(session.id);
     _timelineRevision++;
     final revision = _timelineRevision;
     bool isCurrentSession() =>
@@ -348,6 +361,8 @@ class ChatController extends ChangeNotifier {
             messages = [...messages, ChatMessage.tool(timedEvent)];
           case ApprovalUpdate(:final request):
             pendingApproval = request;
+            _pendingApprovalSessionId = session.id;
+            _pendingApprovalGeneration = sendGeneration;
         }
         notifyListeners();
       }
@@ -397,8 +412,9 @@ class ChatController extends ChangeNotifier {
       ];
       error = exception.toString();
     } finally {
-      if (sendGeneration == _sendGeneration) {
-        sending = false;
+      _activeSendSessions.remove(session.id);
+      if (selected?.id == session.id) {
+        sending = _activeSendSessions.contains(session.id);
         notifyListeners();
       }
     }
@@ -407,10 +423,24 @@ class ChatController extends ChangeNotifier {
   Future<void> respondApproval(String choice) async {
     final request = pendingApproval;
     if (request == null) return;
+    final sessionId = _pendingApprovalSessionId;
+    final generation = _pendingApprovalGeneration;
+    bool isCurrentApproval() =>
+        !_disposed &&
+        identical(pendingApproval, request) &&
+        sessionId != null &&
+        selected?.id == sessionId &&
+        generation == _sendGeneration &&
+        generation == _pendingApprovalGeneration;
+    if (!isCurrentApproval()) return;
     try {
       await api.respondApproval(request, choice);
+      if (!isCurrentApproval()) return;
       pendingApproval = null;
+      _pendingApprovalSessionId = null;
+      _pendingApprovalGeneration = null;
     } catch (exception) {
+      if (!isCurrentApproval()) return;
       error = exception.toString();
     }
     notifyListeners();
