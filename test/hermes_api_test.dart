@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_chat/src/api/hermes_api.dart';
 import 'package:hermes_chat/src/connection.dart';
+import 'package:hermes_chat/src/models.dart';
 
 void main() {
   test('lists Hermes serve sessions with preview text', () async {
@@ -124,6 +125,54 @@ void main() {
         '_tool',
         'assistant',
       ]);
+    },
+  );
+
+  test(
+    'resumed grouped tool calls retain separate requests and results',
+    () async {
+      final transport = _FakeTransport()
+        ..responses['session.resume'] = {
+          'session_id': 'runtime-1',
+          'messages': [
+            {
+              'role': 'assistant',
+              'content': [
+                for (var index = 1; index <= 4; index++)
+                  {
+                    'type': 'tool_use',
+                    'id': 'call-$index',
+                    'name': 'terminal',
+                    'input': {'command': 'request-$index'},
+                  },
+              ],
+            },
+            for (var index = 1; index <= 4; index++)
+              {
+                'role': 'tool',
+                'tool_call_id': 'call-$index',
+                'tool_name': 'terminal',
+                'content': 'result-$index',
+              },
+          ],
+        };
+      final api = _api(transport);
+
+      final messages = await api.messages('stored-1');
+      final group = groupTimeline(messages).single as ToolGroupTimelineBlock;
+
+      for (var index = 1; index <= 4; index++) {
+        final events = group.events
+            .where((event) => event.toolCallId == 'call-$index')
+            .toList();
+        expect(
+          events.map((event) => event.toolState),
+          ['started', 'completed'],
+          reason: 'call-$index must expose a distinct request and result',
+        );
+        expect(events.first.details, contains('request-$index'));
+        expect(events.last.details, contains('result-$index'));
+      }
     },
   );
 
