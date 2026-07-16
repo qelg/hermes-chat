@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_chat/src/api/hermes_api.dart';
 import 'package:hermes_chat/src/app.dart';
 import 'package:hermes_chat/src/chat_controller.dart';
 import 'package:hermes_chat/src/connection.dart';
 import 'package:hermes_chat/src/models.dart';
+import 'package:hermes_chat/src/widgets/assistant_markdown.dart';
 import 'package:hermes_chat/src/widgets/tool_event_tile.dart';
 
 void main() {
@@ -76,6 +78,114 @@ void main() {
 
     expect(find.text('Done'), findsOneWidget);
     expect(find.text('3.2 s'), findsOneWidget);
+  });
+
+  testWidgets('completed assistant messages render common Markdown', (
+    tester,
+  ) async {
+    String? copiedCode;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedCode =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    const markdown = '''# Heading
+
+A **bold** [link](https://example.com) with `inline code`.
+
+[unsafe](javascript:alert(1)) <script>alert('no')</script>
+
+- first
+- second
+
+> quote
+
+| Column |
+| --- |
+| cell |
+
+```dart
+print('hello');
+```
+''';
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(role: 'assistant', text: markdown),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Heading'), findsOneWidget);
+    expect(find.textContaining('bold', findRichText: true), findsOneWidget);
+    expect(find.textContaining('link', findRichText: true), findsOneWidget);
+    expect(find.text('cell'), findsOneWidget);
+    expect(find.text(markdown), findsNothing);
+    expect(find.byTooltip('Copy code'), findsOneWidget);
+    await tester.tap(find.byTooltip('Copy code'));
+    await tester.pump();
+    expect(copiedCode, "print('hello');");
+    expect(tester.takeException(), isNull);
+  });
+
+  test('assistant links reject executable and local URL schemes', () {
+    expect(isSafeAssistantLink(Uri.parse('https://example.com')), isTrue);
+    expect(isSafeAssistantLink(Uri.parse('mailto:team@example.com')), isTrue);
+    expect(isSafeAssistantLink(Uri.parse('javascript:alert(1)')), isFalse);
+    expect(isSafeAssistantLink(Uri.parse('file:///etc/passwd')), isFalse);
+    expect(isSafeAssistantLink(Uri.parse('data:text/html,unsafe')), isFalse);
+  });
+
+  testWidgets('incomplete streaming Markdown renders without crashing', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            child: MessageBubble(
+              message: ChatMessage(
+                role: 'assistant',
+                text: 'Working **now\n\n```dart\nfinal value =',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('Working'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('user messages keep Markdown as literal text', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(role: 'user', text: '**do not render**'),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('**do not render**'), findsOneWidget);
   });
 
   testWidgets('tool groups summarize actual calls by tool type', (

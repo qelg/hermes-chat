@@ -9,6 +9,7 @@ import 'chat_controller.dart';
 import 'connection.dart';
 import 'models.dart';
 import 'theme.dart';
+import 'widgets/assistant_markdown.dart';
 import 'widgets/tool_event_tile.dart';
 
 class HermesChatApp extends StatefulWidget {
@@ -825,7 +826,10 @@ class MessageBubble extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SelectableText(message.text),
+            if (user)
+              SelectableText(message.text)
+            else
+              AssistantMarkdown(data: message.text),
             if (message.duration case final duration?) ...[
               const SizedBox(height: 5),
               Text(
