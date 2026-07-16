@@ -13,6 +13,7 @@ class ChatController extends ChangeNotifier {
   bool loading = false;
   bool sending = false;
   bool transcribing = false;
+  String? voiceError;
   ApprovalRequest? pendingApproval;
   String? error;
 
@@ -61,21 +62,28 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> sendVoice(String path) async {
-    if (sending || transcribing) return;
+  Future<bool> sendVoice(String path) async {
+    if (sending || transcribing) return false;
     transcribing = true;
-    error = null;
+    voiceError = null;
     notifyListeners();
     try {
       final transcript = await api.transcribeAudio(path);
       transcribing = false;
       notifyListeners();
       await send(transcript);
+      return true;
     } catch (exception) {
       transcribing = false;
-      error = exception.toString();
+      voiceError = exception.toString();
       notifyListeners();
+      return false;
     }
+  }
+
+  void dismissVoiceError() {
+    voiceError = null;
+    notifyListeners();
   }
 
   Future<void> send(String text) async {

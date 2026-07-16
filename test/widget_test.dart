@@ -53,6 +53,40 @@ void main() {
     expect(find.textContaining('skill_view ×1'), findsOneWidget);
   });
 
+  testWidgets('voice transcription shows progress and retry actions', (
+    tester,
+  ) async {
+    var retried = false;
+    var discarded = false;
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: VoiceStatusPanel(transcribing: true)),
+      ),
+    );
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(
+      find.text('Uploading and transcribing voice message…'),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: VoiceStatusPanel(
+            error: 'Voice transcription timed out',
+            onRetry: () => retried = true,
+            onDiscard: () => discarded = true,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Retry'));
+    await tester.tap(find.text('Discard'));
+    expect(retried, isTrue);
+    expect(discarded, isTrue);
+  });
+
   testWidgets('session search filters titles and preview text', (tester) async {
     final controller = ChatController(_FakeHermesApi())
       ..sessions = const [

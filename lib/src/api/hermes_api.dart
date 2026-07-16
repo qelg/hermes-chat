@@ -230,11 +230,15 @@ class HermesApi {
 }
 
 class HermesServeTransport implements HermesTransport {
-  HermesServeTransport(this.config, {HttpClient? httpClient})
-    : _http = httpClient ?? HttpClient();
+  HermesServeTransport(
+    this.config, {
+    HttpClient? httpClient,
+    this.transcriptionTimeout = const Duration(minutes: 2),
+  }) : _http = httpClient ?? HttpClient();
 
   final ConnectionConfig config;
   final HttpClient _http;
+  final Duration transcriptionTimeout;
   final Map<String, Cookie> _cookies = {};
   final Map<String, Completer<Map<String, dynamic>>> _pending = {};
   final StreamController<GatewayEvent> _events =
@@ -303,6 +307,7 @@ class HermesServeTransport implements HermesTransport {
     String method,
     String path, {
     Map<String, dynamic>? body,
+    Duration timeout = const Duration(seconds: 20),
   }) async {
     final request = await _http.openUrl(method, _uri(path));
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
@@ -321,7 +326,7 @@ class HermesServeTransport implements HermesTransport {
       );
     }
     if (body != null) request.write(jsonEncode(body));
-    final response = await request.close().timeout(const Duration(seconds: 20));
+    final response = await request.close().timeout(timeout);
     for (final cookie in response.cookies) {
       _cookies[cookie.name] = cookie;
     }
@@ -432,14 +437,22 @@ class HermesServeTransport implements HermesTransport {
       'wav' => 'audio/wav',
       _ => 'application/octet-stream',
     };
-    final response = await _jsonRequest(
-      'POST',
-      '/api/audio/transcribe',
-      body: {
-        'data_url': 'data:$mimeType;base64,${base64Encode(bytes)}',
-        'mime_type': mimeType,
-      },
-    );
+    late final Map<String, dynamic> response;
+    try {
+      response = await _jsonRequest(
+        'POST',
+        '/api/audio/transcribe',
+        body: {
+          'data_url': 'data:$mimeType;base64,${base64Encode(bytes)}',
+          'mime_type': mimeType,
+        },
+        timeout: transcriptionTimeout,
+      ).timeout(transcriptionTimeout);
+    } on TimeoutException {
+      throw const HermesStreamException(
+        'Voice transcription timed out. Check the server and try again.',
+      );
+    }
     final transcript = response['transcript']?.toString().trim() ?? '';
     if (transcript.isEmpty) {
       throw const HermesStreamException('Transcription returned no text');

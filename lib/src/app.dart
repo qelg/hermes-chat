@@ -470,6 +470,50 @@ class MobileChatPage extends StatelessWidget {
   );
 }
 
+class VoiceStatusPanel extends StatelessWidget {
+  const VoiceStatusPanel({
+    super.key,
+    this.transcribing = false,
+    this.error,
+    this.onRetry,
+    this.onDiscard,
+  });
+
+  final bool transcribing;
+  final String? error;
+  final VoidCallback? onRetry;
+  final VoidCallback? onDiscard;
+
+  @override
+  Widget build(BuildContext context) {
+    if (transcribing) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
+        child: Row(
+          children: [
+            SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Expanded(child: Text('Uploading and transcribing voice message…')),
+          ],
+        ),
+      );
+    }
+    if (error case final message?) {
+      return MaterialBanner(
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: onDiscard, child: const Text('Discard')),
+          FilledButton.tonal(onPressed: onRetry, child: const Text('Retry')),
+        ],
+      );
+    }
+    return const SizedBox.shrink();
+  }
+}
+
 class ChatPane extends StatefulWidget {
   const ChatPane({super.key, required this.controller});
   final ChatController controller;
@@ -483,6 +527,7 @@ class _ChatPaneState extends State<ChatPane> {
   final _scroll = ScrollController();
   final _recorder = AudioRecorder();
   bool _recording = false;
+  String? _pendingRecordingPath;
 
   @override
   void dispose() {
@@ -556,6 +601,12 @@ class _ChatPaneState extends State<ChatPane> {
               request: request,
               onChoice: controller.respondApproval,
             ),
+          VoiceStatusPanel(
+            transcribing: controller.transcribing,
+            error: controller.voiceError,
+            onRetry: _pendingRecordingPath == null ? null : _submitRecording,
+            onDiscard: _pendingRecordingPath == null ? null : _discardRecording,
+          ),
           Container(
             constraints: const BoxConstraints(maxWidth: 920),
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -619,12 +670,8 @@ class _ChatPaneState extends State<ChatPane> {
         final path = await _recorder.stop();
         if (mounted) setState(() => _recording = false);
         if (path == null) return;
-        try {
-          await widget.controller.sendVoice(path);
-        } finally {
-          final file = File(path);
-          if (await file.exists()) await file.delete();
-        }
+        _pendingRecordingPath = path;
+        await _submitRecording();
         return;
       }
 
@@ -656,6 +703,25 @@ class _ChatPaneState extends State<ChatPane> {
         );
       }
     }
+  }
+
+  Future<void> _submitRecording() async {
+    final path = _pendingRecordingPath;
+    if (path == null) return;
+    final sent = await widget.controller.sendVoice(path);
+    if (!sent) return;
+    _pendingRecordingPath = null;
+    final file = File(path);
+    if (await file.exists()) await file.delete();
+  }
+
+  Future<void> _discardRecording() async {
+    final path = _pendingRecordingPath;
+    _pendingRecordingPath = null;
+    widget.controller.dismissVoiceError();
+    if (path == null) return;
+    final file = File(path);
+    if (await file.exists()) await file.delete();
   }
 
   void _send() {

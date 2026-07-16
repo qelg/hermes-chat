@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_chat/src/api/hermes_api.dart';
@@ -198,6 +199,47 @@ void main() {
 
     expect(transcript, 'Transcribed voice');
     expect(transport.transcribedPath, '/tmp/voice.m4a');
+  });
+
+  test('voice transcription times out with an actionable error', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final requestReceived = Completer<void>();
+    final subscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response.contentLength = 100;
+      request.response.write('{');
+      await request.response.flush();
+      requestReceived.complete();
+    });
+    final recording = File('${Directory.systemTemp.path}/voice-timeout.m4a');
+    await recording.writeAsBytes([0, 0, 0, 24, 102, 116, 121, 112]);
+    final transport = HermesServeTransport(
+      ConnectionConfig(
+        baseUrl: 'http://${server.address.host}:${server.port}',
+        token: 'test',
+      ),
+      transcriptionTimeout: const Duration(milliseconds: 50),
+    );
+    addTearDown(() async {
+      await transport.close();
+      await subscription.cancel();
+      await server.close(force: true);
+      if (await recording.exists()) await recording.delete();
+    });
+
+    await expectLater(
+      transport
+          .transcribeAudio(recording.path)
+          .timeout(const Duration(milliseconds: 200)),
+      throwsA(
+        isA<HermesStreamException>().having(
+          (error) => error.message,
+          'message',
+          contains('timed out'),
+        ),
+      ),
+    );
+    await requestReceived.future;
   });
 }
 
