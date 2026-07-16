@@ -6,12 +6,14 @@ class HermesSession {
     required this.title,
     this.updatedAt,
     this.source,
+    this.preview,
   });
 
   final String id;
   final String title;
   final DateTime? updatedAt;
   final String? source;
+  final String? preview;
 
   factory HermesSession.fromJson(Map<String, dynamic> json) {
     final rawDate =
@@ -23,8 +25,21 @@ class HermesSession {
           : 'Untitled session',
       updatedAt: rawDate is String ? DateTime.tryParse(rawDate) : null,
       source: json['source'] as String?,
+      preview: json['preview']?.toString(),
     );
   }
+}
+
+List<HermesSession> filterSessions(List<HermesSession> sessions, String query) {
+  final needle = query.trim().toLowerCase();
+  if (needle.isEmpty) return sessions;
+  return sessions
+      .where(
+        (session) =>
+            session.title.toLowerCase().contains(needle) ||
+            (session.preview?.toLowerCase().contains(needle) ?? false),
+      )
+      .toList(growable: false);
 }
 
 class ChatEvent {
@@ -32,11 +47,17 @@ class ChatEvent {
     required this.kind,
     required this.summary,
     required this.details,
+    this.toolName,
+    this.toolState,
+    this.toolCallId,
   });
 
   final ChatEventKind kind;
   final String summary;
   final String details;
+  final String? toolName;
+  final String? toolState;
+  final String? toolCallId;
 
   factory ChatEvent.tool({
     required String type,
@@ -49,6 +70,11 @@ class ChatEvent {
       kind: ChatEventKind.tool,
       summary: '$name · $state',
       details: const JsonEncoder.withIndent('  ').convert(payload),
+      toolName: name.toString(),
+      toolState: state,
+      toolCallId:
+          (payload['tool_call_id'] ?? payload['call_id'] ?? payload['id'])
+              ?.toString(),
     );
   }
 
@@ -138,4 +164,77 @@ class ChatMessage {
     }
     return result;
   }
+}
+
+sealed class TimelineBlock {
+  const TimelineBlock();
+}
+
+class MessageTimelineBlock extends TimelineBlock {
+  const MessageTimelineBlock(this.message);
+  final ChatMessage message;
+}
+
+List<ChatEvent> _representativeToolCalls(List<ChatEvent> events) {
+  final started = events
+      .where((event) => event.toolState == 'started')
+      .toList();
+  final candidates = started.isNotEmpty
+      ? started
+      : events.where((event) => event.toolState == 'completed').toList();
+  final seenIds = <String>{};
+  return candidates
+      .where((event) {
+        final id = event.toolCallId;
+        return id == null || seenIds.add(id);
+      })
+      .toList(growable: false);
+}
+
+class ToolGroupTimelineBlock extends TimelineBlock {
+  ToolGroupTimelineBlock(this.events) {
+    final calls = _representativeToolCalls(events);
+    callCount = calls.length;
+    counts = Map.unmodifiable(
+      calls.fold(<String, int>{}, (result, event) {
+        final name = event.toolName ?? 'tool';
+        result[name] = (result[name] ?? 0) + 1;
+        return result;
+      }),
+    );
+  }
+
+  final List<ChatEvent> events;
+  late final int callCount;
+  late final Map<String, int> counts;
+}
+
+List<TimelineBlock> groupTimeline(
+  List<ChatMessage> messages, {
+  int minimumGroupSize = 4,
+}) {
+  final blocks = <TimelineBlock>[];
+  final tools = <ChatEvent>[];
+
+  void flushTools() {
+    if (_representativeToolCalls(tools).length >= minimumGroupSize) {
+      blocks.add(ToolGroupTimelineBlock(List.unmodifiable(tools)));
+    } else {
+      blocks.addAll(
+        tools.map((event) => MessageTimelineBlock(ChatMessage.tool(event))),
+      );
+    }
+    tools.clear();
+  }
+
+  for (final message in messages) {
+    if (message.event case final event?) {
+      tools.add(event);
+    } else {
+      flushTools();
+      blocks.add(MessageTimelineBlock(message));
+    }
+  }
+  flushTools();
+  return blocks;
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_chat/src/api/hermes_api.dart';
@@ -61,6 +62,27 @@ void main() {
       expect(messages[2].event!.summary, 'terminal · completed');
     },
   );
+
+  test('uploads a voice recording and returns its transcript', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'hermes-audio-test',
+    );
+    final recording = File('${directory.path}/voice.m4a');
+    await recording.writeAsBytes([1, 2, 3]);
+    final client = _TranscriptionClient();
+    final api = HermesApi(
+      const ConnectionConfig(baseUrl: 'https://example.test', token: 'token'),
+      client: client,
+    );
+
+    final transcript = await api.transcribeAudio(recording.path);
+
+    expect(transcript, 'Transcribed voice');
+    expect(client.path, '/v1/audio/transcriptions');
+    expect(client.fileName, 'voice.m4a');
+    expect(client.authorization, 'Bearer token');
+    await directory.delete(recursive: true);
+  });
 
   test(
     'session stream exposes final assistant content even without deltas',
@@ -125,6 +147,26 @@ class _StreamClient extends http.BaseClient {
       Stream.value(utf8.encode(sse)),
       200,
       headers: {'content-type': contentType},
+    );
+  }
+}
+
+class _TranscriptionClient extends http.BaseClient {
+  String? path;
+  String? fileName;
+  String? authorization;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    path = request.url.path;
+    authorization = request.headers['Authorization'];
+    if (request is http.MultipartRequest && request.files.isNotEmpty) {
+      fileName = request.files.single.filename;
+    }
+    return http.StreamedResponse(
+      Stream.value(utf8.encode('{"text":"Transcribed voice"}')),
+      200,
+      headers: {'content-type': 'application/json'},
     );
   }
 }

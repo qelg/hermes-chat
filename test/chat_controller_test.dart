@@ -36,6 +36,20 @@ void main() {
     ]);
     controller.dispose();
   });
+  test('transcribes a recording before sending it as a user message', () async {
+    final api = _ConversationApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(
+        id: 'session-1',
+        title: 'Existing session',
+      );
+
+    await controller.sendVoice('/tmp/voice.m4a');
+
+    expect(api.transcribedPath, '/tmp/voice.m4a');
+    expect(controller.messages.first.text, 'Voice transcript');
+  });
+
   test('first message gives an untitled session a stable title', () async {
     final api = _ConversationApi();
     final controller = ChatController(api)
@@ -60,6 +74,13 @@ class _ConversationApi extends HermesApi {
 
   var turn = 0;
   String? updatedTitle;
+  String? transcribedPath;
+
+  @override
+  Future<String> transcribeAudio(String path) async {
+    transcribedPath = path;
+    return 'Voice transcript';
+  }
 
   @override
   Future<void> updateSessionTitle(String sessionId, String title) async {
