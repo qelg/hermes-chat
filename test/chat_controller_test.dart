@@ -115,7 +115,11 @@ void main() {
       final controller = ChatController(api)
         ..selected = const HermesSession(id: 'first', title: 'First')
         ..messages = const [
-          ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+          ChatMessage(
+            role: 'assistant',
+            text: 'First history',
+            persistedId: '1',
+          ),
         ];
 
       final firstRefresh = controller.refreshHistory();
