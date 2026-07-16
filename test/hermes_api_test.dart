@@ -132,11 +132,12 @@ void main() {
         '3',
         '4',
       ]);
+      final persistedDurations = messages
+          .map((message) => message.event?.duration)
+          .whereType<Duration>();
       expect(
-        messages
-            .where((message) => message.event != null)
-            .every((message) => message.event!.duration == null),
-        isTrue,
+        persistedDurations,
+        isEmpty,
         reason: 'database flush timestamps must not become fake tool durations',
       );
     },
@@ -279,37 +280,43 @@ void main() {
     });
   });
 
-  test('REST history uses the encoded path, auth header, and messages list', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    late Uri requestedUri;
-    late String? sessionToken;
-    final subscription = server.listen((request) async {
-      requestedUri = request.uri;
-      sessionToken = request.headers.value('X-Hermes-Session-Token');
-      request.response.headers.contentType = ContentType.json;
-      request.response.write(
-        '{"messages":[{"id":1,"role":"assistant","content":"Saved"}]}',
+  test(
+    'REST history uses the encoded path, auth header, and messages list',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      late Uri requestedUri;
+      late String? sessionToken;
+      final subscription = server.listen((request) async {
+        requestedUri = request.uri;
+        sessionToken = request.headers.value('X-Hermes-Session-Token');
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          '{"messages":[{"id":1,"role":"assistant","content":"Saved"}]}',
+        );
+        await request.response.close();
+      });
+      final transport = HermesServeTransport(
+        ConnectionConfig(
+          baseUrl: 'http://${server.address.host}:${server.port}',
+          token: 'secret-test-token',
+        ),
       );
-      await request.response.close();
-    });
-    final transport = HermesServeTransport(
-      ConnectionConfig(
-        baseUrl: 'http://${server.address.host}:${server.port}',
-        token: 'secret-test-token',
-      ),
-    );
-    addTearDown(() async {
-      await transport.close();
-      await subscription.cancel();
-      await server.close(force: true);
-    });
+      addTearDown(() async {
+        await transport.close();
+        await subscription.cancel();
+        await server.close(force: true);
+      });
 
-    final rows = await transport.history('stored/session ?');
+      final rows = await transport.history('stored/session ?');
 
-    expect(requestedUri.toString(), '/api/sessions/stored%2Fsession%20%3F/messages');
-    expect(sessionToken, 'secret-test-token');
-    expect(rows.single['content'], 'Saved');
-  });
+      expect(
+        requestedUri.toString(),
+        '/api/sessions/stored%2Fsession%20%3F/messages',
+      );
+      expect(sessionToken, 'secret-test-token');
+      expect(rows.single['content'], 'Saved');
+    },
+  );
 
   test('REST history rejects a malformed messages payload', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

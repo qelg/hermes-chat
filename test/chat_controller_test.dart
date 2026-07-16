@@ -22,7 +22,8 @@ void main() {
       ChatMessage(role: 'assistant', text: 'Initial'),
       ChatMessage(role: 'user', text: 'External message'),
     ];
-    await Future<void>.delayed(const Duration(milliseconds: 30));
+    await api.periodicRead.future;
+    await Future<void>.delayed(Duration.zero);
 
     expect(controller.messages.map((message) => message.text), [
       'Initial',
@@ -115,12 +116,16 @@ void main() {
 
     final selectingFirst = controller.select(first);
     final selectingSecond = controller.select(second);
-    api.complete('second', 'Second history');
-    await selectingSecond;
     api.complete('first', 'First history');
     await selectingFirst;
+    expect(controller.selected, second);
+    expect(controller.loading, isTrue);
+
+    api.complete('second', 'Second history');
+    await selectingSecond;
 
     expect(controller.selected, second);
+    expect(controller.loading, isFalse);
     expect(controller.messages.single.text, 'Second history');
     controller.dispose();
   });
@@ -432,9 +437,15 @@ class _RefreshingApi extends HermesApi {
   List<ChatMessage> history = const [
     ChatMessage(role: 'assistant', text: 'Initial'),
   ];
+  final periodicRead = Completer<void>();
+  var historyCalls = 0;
 
   @override
-  Future<List<ChatMessage>> messages(String sessionId) async => history;
+  Future<List<ChatMessage>> messages(String sessionId) async {
+    historyCalls += 1;
+    if (historyCalls > 1 && !periodicRead.isCompleted) periodicRead.complete();
+    return history;
+  }
 
   @override
   void close() {}
