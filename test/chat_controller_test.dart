@@ -370,10 +370,53 @@ void main() {
     await controller.respondApproval('once');
     expect(api.approvalChoices, isEmpty);
 
-    api.releaseStream.complete();
+    if (!api.releaseStream.isCompleted) api.releaseStream.complete();
     await sending;
     controller.dispose();
   });
+
+  test(
+    'switching away cancels an approval-gated send before returning',
+    () async {
+      final api = _ApprovalDuringSwitchApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(id: 'first', title: 'First');
+
+      final sending = controller.send('Run command');
+      await api.approvalEmitted.future;
+
+      await controller.select(
+        const HermesSession(id: 'second', title: 'Second'),
+      );
+      await sending;
+      await controller.select(const HermesSession(id: 'first', title: 'First'));
+
+      expect(api.interruptedSessions, ['first']);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.sending, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'reselecting an approval-gated session keeps its send actionable',
+    () async {
+      final api = _ApprovalDuringSwitchApi();
+      const session = HermesSession(id: 'first', title: 'First');
+      final controller = ChatController(api)..selected = session;
+
+      final sending = controller.send('Run command');
+      await api.approvalEmitted.future;
+      await controller.select(session);
+
+      expect(controller.pendingApproval?.command, 'sudo true');
+      expect(controller.sending, isTrue);
+      expect(api.interruptedSessions, isEmpty);
+      api.releaseStream.complete();
+      await sending;
+      controller.dispose();
+    },
+  );
 
   test(
     'an old approval response cannot surface an error in a new chat',
@@ -396,7 +439,7 @@ void main() {
       expect(controller.selected?.id, 'second');
       expect(controller.pendingApproval, isNull);
       expect(controller.error, isNull);
-      api.releaseStream.complete();
+      if (!api.releaseStream.isCompleted) api.releaseStream.complete();
       await sending;
       controller.dispose();
     },
@@ -1020,6 +1063,7 @@ class _ApprovalDuringSwitchApi extends HermesApi {
   final approvalResponseStarted = Completer<void>();
   final releaseApprovalResponse = Completer<void>();
   final approvalChoices = <String>[];
+  final interruptedSessions = <String>[];
 
   @override
   Stream<StreamUpdate> chat(String sessionId, String input) async* {
@@ -1040,6 +1084,12 @@ class _ApprovalDuringSwitchApi extends HermesApi {
     approvalChoices.add(choice);
     approvalResponseStarted.complete();
     await releaseApprovalResponse.future;
+  }
+
+  @override
+  Future<void> interrupt(String sessionId) async {
+    interruptedSessions.add(sessionId);
+    if (!releaseStream.isCompleted) releaseStream.complete();
   }
 
   @override

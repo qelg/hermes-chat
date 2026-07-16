@@ -98,6 +98,13 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> select(HermesSession session) async {
+    final previousSession = selected;
+    if (previousSession?.id == session.id &&
+        _activeSendSessions.contains(session.id)) {
+      selected = session;
+      notifyListeners();
+      return;
+    }
     _refreshTimer?.cancel();
     _pendingPersistence = const [];
     pendingApproval = null;
@@ -111,6 +118,19 @@ class ChatController extends ChangeNotifier {
     loading = true;
     error = null;
     notifyListeners();
+    if (previousSession != null &&
+        previousSession.id != session.id &&
+        _activeSendSessions.contains(previousSession.id)) {
+      try {
+        await api.interrupt(previousSession.id);
+      } catch (exception) {
+        if (!_disposed &&
+            revision == _timelineRevision &&
+            selected?.id == session.id) {
+          error = exception.toString();
+        }
+      }
+    }
     try {
       final loaded = await api.messages(session.id);
       if (!_disposed &&

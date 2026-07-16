@@ -368,7 +368,8 @@ class HermesServeTransport implements HermesTransport {
       '/api/sessions/$encoded/messages',
     );
     final rows = response['messages'];
-    if (rows is! List || rows.any((row) => row is! Map)) {
+    if (rows is! List ||
+        rows.any((row) => row is! Map || !_isValidHistoryRow(row))) {
       throw const HermesStreamException(
         'Hermes session history has no valid messages list',
       );
@@ -377,6 +378,38 @@ class HermesServeTransport implements HermesTransport {
         .whereType<Map>()
         .map((row) => row.cast<String, dynamic>())
         .toList(growable: false);
+  }
+
+  bool _isValidHistoryRow(Map<dynamic, dynamic> row) {
+    final role = row['role'];
+    if (role is! String ||
+        !const {
+          'user',
+          'assistant',
+          'system',
+          'developer',
+          'tool',
+        }.contains(role)) {
+      return false;
+    }
+
+    if (role == 'tool') {
+      final callId = row['tool_call_id']?.toString().trim() ?? '';
+      final name = (row['tool_name'] ?? row['name'])?.toString().trim() ?? '';
+      return callId.isNotEmpty &&
+          name.isNotEmpty &&
+          (row.containsKey('content') || row.containsKey('text'));
+    }
+
+    final content = row.containsKey('content') ? row['content'] : row['text'];
+    if (content is String && content.trim().isNotEmpty) return true;
+    if (content is List &&
+        content.isNotEmpty &&
+        content.every((part) => part is Map)) {
+      return true;
+    }
+    final toolCalls = row['tool_calls'];
+    return role == 'assistant' && toolCalls is List && toolCalls.isNotEmpty;
   }
 
   @override

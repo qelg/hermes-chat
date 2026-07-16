@@ -376,6 +376,31 @@ void main() {
     );
   });
 
+  test('REST history rejects semantically malformed message maps', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write('{"messages":[{}]}');
+      await request.response.close();
+    });
+    final transport = HermesServeTransport(
+      ConnectionConfig(
+        baseUrl: 'http://${server.address.host}:${server.port}',
+        token: 'test',
+      ),
+    );
+    addTearDown(() async {
+      await transport.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    await expectLater(
+      transport.history('stored-1'),
+      throwsA(isA<HermesStreamException>()),
+    );
+  });
+
   test('uses Hermes serve voice transcription', () async {
     final transport = _FakeTransport()..transcript = 'Transcribed voice';
     final api = _api(transport);
