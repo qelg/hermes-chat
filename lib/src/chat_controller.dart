@@ -1,11 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'api/hermes_api.dart';
 import 'models.dart';
 
 class ChatController extends ChangeNotifier {
-  ChatController(this.api, {Duration Function()? elapsed})
-    : _elapsed = elapsed ?? _startClock();
+  ChatController(
+    this.api, {
+    Duration Function()? elapsed,
+    this.refreshInterval = const Duration(seconds: 2),
+  }) : _elapsed = elapsed ?? _startClock() {
+    _reconnectionSubscription = api.reconnections.listen(
+      (_) => unawaited(refreshHistory()),
+    );
+  }
 
   static Duration Function() _startClock() {
     final stopwatch = Stopwatch()..start();
@@ -14,6 +23,14 @@ class ChatController extends ChangeNotifier {
 
   final HermesApi api;
   final Duration Function() _elapsed;
+  final Duration refreshInterval;
+  Timer? _refreshTimer;
+  bool _refreshing = false;
+  bool _refreshQueued = false;
+  bool _disposed = false;
+  int _timelineRevision = 0;
+  late final StreamSubscription<void> _reconnectionSubscription;
+  List<ChatMessage> _pendingPersistence = const [];
   List<HermesSession> sessions = const [];
   List<ChatMessage> messages = const [];
   HermesSession? selected;
@@ -23,6 +40,11 @@ class ChatController extends ChangeNotifier {
   String? voiceError;
   ApprovalRequest? pendingApproval;
   String? error;
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
 
   Future<void> loadSessions() async {
     loading = true;
@@ -55,18 +77,107 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> select(HermesSession session) async {
+    _refreshTimer?.cancel();
+    _pendingPersistence = const [];
+    _timelineRevision++;
+    final revision = _timelineRevision;
     selected = session;
     loading = true;
     error = null;
     notifyListeners();
     try {
-      messages = await api.messages(session.id);
+      final loaded = await api.messages(session.id);
+      if (!_disposed &&
+          revision == _timelineRevision &&
+          selected?.id == session.id) {
+        messages = loaded;
+      }
     } catch (exception) {
-      error = exception.toString();
+      if (!_disposed && revision == _timelineRevision) {
+        error = exception.toString();
+      }
     } finally {
-      loading = false;
-      notifyListeners();
+      if (!_disposed &&
+          revision == _timelineRevision &&
+          selected?.id == session.id) {
+        loading = false;
+        notifyListeners();
+        _refreshTimer = Timer.periodic(
+          refreshInterval,
+          (_) => unawaited(refreshHistory()),
+        );
+      }
     }
+  }
+
+  Future<void> refreshHistory({bool force = false}) async {
+    final session = selected;
+    if (_disposed || session == null || (sending && !force)) return;
+    if (_refreshing) {
+      if (force) _refreshQueued = true;
+      return;
+    }
+    final revision = _timelineRevision;
+    _refreshing = true;
+    try {
+      final canonical = await api.messages(session.id);
+      if (_disposed ||
+          selected?.id != session.id ||
+          revision != _timelineRevision ||
+          (sending && !force)) {
+        return;
+      }
+      messages = _reconcileCanonical(canonical);
+      notifyListeners();
+    } catch (_) {
+      // Periodic reconciliation is best-effort and retries on the next tick.
+    } finally {
+      _refreshing = false;
+      if (_refreshQueued && !_disposed) {
+        _refreshQueued = false;
+        unawaited(refreshHistory(force: true));
+      }
+    }
+  }
+
+  List<ChatMessage> _reconcileCanonical(List<ChatMessage> canonical) {
+    if (_pendingPersistence.isEmpty) return canonical;
+
+    final previouslyPersisted = messages
+        .map((message) => message.persistedId)
+        .whereType<String>()
+        .toSet();
+    final newlyPersisted = canonical
+        .where(
+          (message) =>
+              message.persistedId != null &&
+              !previouslyPersisted.contains(message.persistedId),
+        )
+        .toList();
+    final stillPending = <ChatMessage>[];
+    for (final pending in _pendingPersistence) {
+      final match = newlyPersisted.indexWhere(
+        (persisted) => _samePersistedMessage(pending, persisted),
+      );
+      if (match >= 0) {
+        newlyPersisted.removeAt(match);
+      } else {
+        stillPending.add(pending);
+      }
+    }
+    _pendingPersistence = stillPending;
+    return [...canonical, ...stillPending];
+  }
+
+  bool _samePersistedMessage(ChatMessage pending, ChatMessage persisted) {
+    final pendingEvent = pending.event;
+    final persistedEvent = persisted.event;
+    if (pendingEvent != null || persistedEvent != null) {
+      return pendingEvent?.toolCallId != null &&
+          pendingEvent?.toolCallId == persistedEvent?.toolCallId &&
+          pendingEvent?.toolState == persistedEvent?.toolState;
+    }
+    return pending.role == persisted.role && pending.text == persisted.text;
   }
 
   Future<bool> sendVoice(String path) async {
@@ -97,6 +208,7 @@ class ChatController extends ChangeNotifier {
     final session = selected;
     final clean = text.trim();
     if (session == null || clean.isEmpty || sending) return;
+    _timelineRevision++;
     messages = [...messages, ChatMessage(role: 'user', text: clean)];
     sending = true;
     error = null;
@@ -106,6 +218,7 @@ class ChatController extends ChangeNotifier {
     var generationRunning = true;
     Duration? generationDuration;
     var receivedTool = false;
+    var completed = false;
     final toolStarts = <String, Duration>{};
 
     Duration currentGenerationDuration(Duration now) =>
@@ -146,6 +259,11 @@ class ChatController extends ChangeNotifier {
     try {
       await for (final update in api.chat(session.id, clean)) {
         switch (update) {
+          case HistoryUpdate(:final messages):
+            this.messages = [
+              ...messages,
+              ChatMessage(role: 'user', text: clean),
+            ];
           case TextDelta(:final text):
             final now = _elapsed();
             if (!generationRunning && toolStarts.isEmpty) {
@@ -165,6 +283,7 @@ class ChatController extends ChangeNotifier {
               ),
             ];
           case CompletedText(:final text):
+            completed = true;
             final completedAt = _elapsed();
             generationDuration = currentGenerationDuration(completedAt);
             if (text.isNotEmpty) response = text;
@@ -221,6 +340,15 @@ class ChatController extends ChangeNotifier {
       } else if (!receivedTool) {
         messages = await api.messages(session.id);
       }
+      if (completed) {
+        _pendingPersistence = messages
+            .where(
+              (message) =>
+                  message.persistedId == null && message.role != '_draft',
+            )
+            .toList(growable: false);
+        await refreshHistory(force: true);
+      }
       await loadSessions();
     } catch (exception) {
       finishPendingTools('failed');
@@ -266,6 +394,9 @@ class ChatController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _refreshTimer?.cancel();
+    unawaited(_reconnectionSubscription.cancel());
     api.close();
     super.dispose();
   }

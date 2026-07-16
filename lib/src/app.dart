@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -245,11 +246,19 @@ class ChatShell extends StatefulWidget {
   State<ChatShell> createState() => _ChatShellState();
 }
 
-class _ChatShellState extends State<ChatShell> {
+class _ChatShellState extends State<ChatShell> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_changed);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(widget.controller.refreshHistory());
+    }
   }
 
   @override
@@ -263,6 +272,7 @@ class _ChatShellState extends State<ChatShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_changed);
     super.dispose();
   }

@@ -196,6 +196,25 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('returning to foreground refreshes the visible chat', (
+    tester,
+  ) async {
+    final api = _CountingHermesApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'session-1', title: 'Test');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatShell(controller: controller, onSettings: () {}),
+      ),
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+
+    expect(api.historyLoads, 1);
+    controller.dispose();
+  });
+
   testWidgets('approval card exposes deny once and permanent choices', (
     tester,
   ) async {
@@ -264,4 +283,14 @@ class _FakeHermesApi extends HermesApi {
 
   @override
   void close() {}
+}
+
+class _CountingHermesApi extends _FakeHermesApi {
+  int historyLoads = 0;
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async {
+    historyLoads++;
+    return const [ChatMessage(role: 'assistant', text: 'Refreshed')];
+  }
 }

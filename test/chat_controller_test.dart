@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_chat/src/api/hermes_api.dart';
 import 'package:hermes_chat/src/chat_controller.dart';
@@ -5,6 +7,169 @@ import 'package:hermes_chat/src/connection.dart';
 import 'package:hermes_chat/src/models.dart';
 
 void main() {
+  test('visible chats periodically reconcile canonical REST history', () async {
+    final api = _RefreshingApi();
+    final controller = ChatController(
+      api,
+      refreshInterval: const Duration(milliseconds: 10),
+    );
+    const session = HermesSession(id: 'session-1', title: 'Existing session');
+
+    await controller.select(session);
+    expect(controller.messages.map((message) => message.text), ['Initial']);
+
+    api.history = const [
+      ChatMessage(role: 'assistant', text: 'Initial'),
+      ChatMessage(role: 'user', text: 'External message'),
+    ];
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(controller.messages.map((message) => message.text), [
+      'Initial',
+      'External message',
+    ]);
+    controller.dispose();
+  });
+
+  test('stale post-completion history does not erase the local turn', () async {
+    final api = _StaleCompletionHistoryApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(
+        id: 'session-1',
+        title: 'Existing session',
+      )
+      ..messages = const [
+        ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+      ];
+
+    await controller.send('Own question');
+
+    expect(controller.messages.map((message) => message.text), [
+      'Initial',
+      'External reply',
+      'Own question',
+      'Own reply',
+    ]);
+
+    api.history = const [
+      ..._StaleCompletionHistoryApi.canonicalBeforeOwnTurn,
+      ChatMessage(role: 'user', text: 'Own question', persistedId: '3'),
+      ChatMessage(role: 'assistant', text: 'Own reply', persistedId: '4'),
+    ];
+    await controller.refreshHistory(force: true);
+
+    expect(controller.messages.map((message) => message.text), [
+      'Initial',
+      'External reply',
+      'Own question',
+      'Own reply',
+    ]);
+    expect(
+      controller.messages.every((message) => message.persistedId != null),
+      isTrue,
+    );
+    controller.dispose();
+  });
+
+  test(
+    'a refresh started before send cannot overwrite the live turn',
+    () async {
+      final api = _OverlappingRefreshApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(
+          id: 'session-1',
+          title: 'Existing session',
+        )
+        ..messages = const [
+          ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+        ];
+
+      final staleRefresh = controller.refreshHistory();
+      final send = controller.send('Own question');
+      api.staleRefresh.complete(const [
+        ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+      ]);
+      await staleRefresh;
+      await api.completionRefreshStarted.future;
+      await send;
+
+      expect(api.historyCalls, 2);
+      expect(controller.messages.map((message) => message.text), [
+        'Initial',
+        'Own question',
+        'Own reply',
+      ]);
+      expect(
+        controller.messages.every((message) => message.persistedId != null),
+        isTrue,
+      );
+      controller.dispose();
+    },
+  );
+
+  test('select ignores stale history from a previous session', () async {
+    final api = _DeferredHistoryApi();
+    final controller = ChatController(api);
+    const first = HermesSession(id: 'first', title: 'First');
+    const second = HermesSession(id: 'second', title: 'Second');
+
+    final selectingFirst = controller.select(first);
+    final selectingSecond = controller.select(second);
+    api.complete('second', 'Second history');
+    await selectingSecond;
+    api.complete('first', 'First history');
+    await selectingFirst;
+
+    expect(controller.selected, second);
+    expect(controller.messages.single.text, 'Second history');
+    controller.dispose();
+  });
+
+  test(
+    'disposing during history load does not notify or start a timer',
+    () async {
+      final api = _DeferredHistoryApi();
+      final controller = ChatController(
+        api,
+        refreshInterval: const Duration(milliseconds: 1),
+      );
+
+      final selecting = controller.select(
+        const HermesSession(id: 'first', title: 'First'),
+      );
+      controller.dispose();
+      api.complete('first', 'Late history');
+
+      await expectLater(selecting, completes);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(api.historyCalls, 1);
+    },
+  );
+
+  test('successful WebSocket reconnect reconciles visible history', () async {
+    final api = _ReconnectApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(
+        id: 'session-1',
+        title: 'Existing session',
+      )
+      ..messages = const [ChatMessage(role: 'assistant', text: 'Initial')];
+
+    api.history = const [
+      ChatMessage(role: 'assistant', text: 'Initial'),
+      ChatMessage(role: 'user', text: 'After reconnect'),
+    ];
+    api.emitReconnect();
+    await api.refreshObserved.future;
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.messages.map((message) => message.text), [
+      'Initial',
+      'After reconnect',
+    ]);
+    controller.dispose();
+  });
+
   test('tool events remain in chronological order across turns', () async {
     final api = _ConversationApi();
     final controller = ChatController(api)
@@ -256,6 +421,144 @@ void main() {
     expect(controller.pendingApproval, isNull);
     controller.dispose();
   });
+}
+
+class _RefreshingApi extends HermesApi {
+  _RefreshingApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  List<ChatMessage> history = const [
+    ChatMessage(role: 'assistant', text: 'Initial'),
+  ];
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async => history;
+
+  @override
+  void close() {}
+}
+
+class _StaleCompletionHistoryApi extends HermesApi {
+  _StaleCompletionHistoryApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  static const canonicalBeforeOwnTurn = [
+    ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+    ChatMessage(role: 'assistant', text: 'External reply', persistedId: '2'),
+  ];
+  List<ChatMessage> history = canonicalBeforeOwnTurn;
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const HistoryUpdate(canonicalBeforeOwnTurn);
+    yield const CompletedText('Own reply');
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async => history;
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'session-1', title: 'Existing session'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _OverlappingRefreshApi extends HermesApi {
+  _OverlappingRefreshApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final staleRefresh = Completer<List<ChatMessage>>();
+  final completionRefreshStarted = Completer<void>();
+  var historyCalls = 0;
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) {
+    historyCalls += 1;
+    if (historyCalls == 1) return staleRefresh.future;
+    if (!completionRefreshStarted.isCompleted) {
+      completionRefreshStarted.complete();
+    }
+    return Future.value(const [
+      ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+      ChatMessage(role: 'user', text: 'Own question', persistedId: '2'),
+      ChatMessage(role: 'assistant', text: 'Own reply', persistedId: '3'),
+    ]);
+  }
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const HistoryUpdate([
+      ChatMessage(role: 'assistant', text: 'Initial', persistedId: '1'),
+    ]);
+    yield const CompletedText('Own reply');
+  }
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'session-1', title: 'Existing session'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _DeferredHistoryApi extends HermesApi {
+  _DeferredHistoryApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final requests = <String, Completer<List<ChatMessage>>>{};
+  var historyCalls = 0;
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) {
+    historyCalls += 1;
+    return (requests[sessionId] ??= Completer<List<ChatMessage>>()).future;
+  }
+
+  void complete(String sessionId, String text) {
+    requests[sessionId]!.complete([ChatMessage(role: 'assistant', text: text)]);
+  }
+
+  @override
+  void close() {}
+}
+
+class _ReconnectApi extends HermesApi {
+  _ReconnectApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final reconnectController = StreamController<void>.broadcast();
+  final refreshObserved = Completer<void>();
+  List<ChatMessage> history = const [];
+
+  @override
+  Stream<void> get reconnections => reconnectController.stream;
+
+  void emitReconnect() => reconnectController.add(null);
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async {
+    if (!refreshObserved.isCompleted) refreshObserved.complete();
+    return history;
+  }
+
+  @override
+  void close() {
+    unawaited(reconnectController.close());
+  }
 }
 
 class _InterleavedConversationApi extends HermesApi {

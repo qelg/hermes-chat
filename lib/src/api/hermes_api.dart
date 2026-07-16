@@ -19,6 +19,11 @@ class CompletedText extends StreamUpdate {
   final String text;
 }
 
+class HistoryUpdate extends StreamUpdate {
+  const HistoryUpdate(this.messages);
+  final List<ChatMessage> messages;
+}
+
 class ToolUpdate extends StreamUpdate {
   const ToolUpdate(this.event);
   final ChatEvent event;
@@ -62,6 +67,7 @@ abstract class HermesTransport {
     String method, [
     Map<String, dynamic> params = const {},
   ]);
+  Future<List<Map<String, dynamic>>> history(String sessionId);
   Future<String> transcribeAudio(String path);
   Future<void> close();
 }
@@ -76,6 +82,10 @@ class HermesApi {
   final Set<String> _freshSessions = {};
 
   Future<void> checkHealth() => _transport.connect();
+
+  Stream<void> get reconnections => _transport.events
+      .where((event) => event.type == 'connection.restored')
+      .map((_) {});
 
   Future<List<HermesSession>> listSessions() async {
     final result = await _transport.request('session.list', {'limit': 200});
@@ -109,8 +119,7 @@ class HermesApi {
 
   Future<List<ChatMessage>> messages(String sessionId) async {
     if (_freshSessions.contains(sessionId)) return const [];
-    final result = await _resume(sessionId);
-    return _messagesFromResult(result);
+    return _messagesFromRows(await _transport.history(sessionId));
   }
 
   Future<Map<String, dynamic>> _resume(String storedId) async {
@@ -129,10 +138,11 @@ class HermesApi {
     return result;
   }
 
-  List<ChatMessage> _messagesFromResult(Map<String, dynamic> result) {
-    final raw = result['messages'] as List? ?? const [];
-    return raw
-        .whereType<Map>()
+  List<ChatMessage> _messagesFromRows(List<Map<String, dynamic>> rows) {
+    // Do not derive tool durations from these timestamps. Hermes currently
+    // assigns assistant/tool row timestamps while flushing the turn, so their
+    // delta reflects database writes rather than execution time.
+    return rows
         .expand(
           (item) => ChatMessage.fromJsonMany(item.cast<String, dynamic>()),
         )
@@ -143,10 +153,14 @@ class HermesApi {
       _transport.transcribeAudio(path);
 
   Stream<StreamUpdate> chat(String storedId, String input) async* {
+    final wasFresh = _freshSessions.contains(storedId);
     var runtimeId = _runtimeSessions[storedId];
     runtimeId ??= (await _resume(storedId))['session_id']?.toString();
     if (runtimeId == null || runtimeId.isEmpty) {
       throw const HermesStreamException('Session is not connected');
+    }
+    if (!wasFresh) {
+      yield HistoryUpdate(await messages(storedId));
     }
 
     final incoming = StreamController<GatewayEvent>();
@@ -246,6 +260,7 @@ class HermesServeTransport implements HermesTransport {
   WebSocket? _socket;
   StreamSubscription<dynamic>? _socketSubscription;
   int _nextRequestId = 0;
+  bool _connectedBefore = false;
 
   @override
   Stream<GatewayEvent> get events => _events.stream;
@@ -285,6 +300,10 @@ class HermesServeTransport implements HermesTransport {
       onDone: _handleSocketDone,
       cancelOnError: false,
     );
+    if (_connectedBefore) {
+      _events.add(const GatewayEvent(type: 'connection.restored', payload: {}));
+    }
+    _connectedBefore = true;
   }
 
   Future<void> _login() async {
@@ -339,6 +358,25 @@ class HermesServeTransport implements HermesTransport {
     return decoded is Map
         ? decoded.cast<String, dynamic>()
         : <String, dynamic>{'data': decoded};
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> history(String sessionId) async {
+    final encoded = Uri.encodeComponent(sessionId);
+    final response = await _jsonRequest(
+      'GET',
+      '/api/sessions/$encoded/messages',
+    );
+    final rows = response['messages'];
+    if (rows is! List) {
+      throw const HermesStreamException(
+        'Hermes session history has no valid messages list',
+      );
+    }
+    return rows
+        .whereType<Map>()
+        .map((row) => row.cast<String, dynamic>())
+        .toList(growable: false);
   }
 
   @override
