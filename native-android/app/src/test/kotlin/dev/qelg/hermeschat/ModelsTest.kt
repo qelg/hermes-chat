@@ -30,4 +30,22 @@ class ModelsTest {
         val items = listOf(ChatItem.Tool("1", "terminal", "started", ""), ChatItem.Message("assistant", "done"), ChatItem.Tool("2", "file", "started", ""))
         assertEquals(3, groupTimeline(items).size)
     }
+
+    @Test
+    fun completionReplacesMatchingToolStartInsteadOfDuplicatingIt() {
+        val started = listOf<ChatItem>(ChatItem.Tool("call-1", "terminal", "started", "input"))
+        val updated = upsertTool(started, ChatItem.Tool("call-1", "terminal", "completed", "output", 1250))
+        assertEquals(1, updated.size)
+        assertEquals("completed", (updated.single() as ChatItem.Tool).state)
+        assertEquals(1250L, (updated.single() as ChatItem.Tool).durationMs)
+    }
+
+    @Test
+    fun insecurePublicHttpEndpointIsRejected() {
+        assertTrue(ConnectionConfig("https://example.com").isAllowedEndpoint())
+        assertTrue(ConnectionConfig("http://192.168.1.2:9119").isAllowedEndpoint())
+        assertTrue(ConnectionConfig("http://100.90.1.2:9119").isAllowedEndpoint())
+        assertTrue(ConnectionConfig("http://server.tail1234.ts.net:9119").isAllowedEndpoint())
+        assertTrue(!ConnectionConfig("http://example.com").isAllowedEndpoint())
+    }
 }
