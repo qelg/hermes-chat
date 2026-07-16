@@ -85,6 +85,33 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('approval card exposes deny once and permanent choices', (
+    tester,
+  ) async {
+    String? choice;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ApprovalCard(
+            request: const ApprovalRequest(
+              sessionId: 'runtime-1',
+              command: 'sudo true',
+              description: 'Run command',
+              allowPermanent: true,
+            ),
+            onChoice: (value) => choice = value,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Deny'), findsOneWidget);
+    expect(find.text('Allow once'), findsOneWidget);
+    expect(find.text('Always allow'), findsOneWidget);
+    await tester.tap(find.text('Allow once'));
+    expect(choice, 'once');
+  });
+
   testWidgets('mobile chat rebuilds when the controller emits an update', (
     tester,
   ) async {
