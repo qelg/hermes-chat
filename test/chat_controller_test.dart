@@ -50,6 +50,24 @@ void main() {
     expect(controller.messages.first.text, 'Voice transcript');
   });
 
+  test('keeps a failed voice recording available for retry', () async {
+    final api = _ConversationApi()..transcribeError = Exception('offline');
+    final controller = ChatController(api)
+      ..selected = const HermesSession(
+        id: 'session-1',
+        title: 'Existing session',
+      );
+
+    final sent = await controller.sendVoice('/tmp/voice.m4a');
+
+    expect(sent, isFalse);
+    expect(controller.transcribing, isFalse);
+    expect(controller.voiceError, contains('offline'));
+
+    controller.dismissVoiceError();
+    expect(controller.voiceError, isNull);
+  });
+
   test('surfaces and resolves Hermes tool approvals', () async {
     final api = _ConversationApi()..emitApproval = true;
     final controller = ChatController(api)
@@ -78,10 +96,12 @@ class _ConversationApi extends HermesApi {
   bool emitApproval = false;
   String? approvalChoice;
   String? transcribedPath;
+  Object? transcribeError;
 
   @override
   Future<String> transcribeAudio(String path) async {
     transcribedPath = path;
+    if (transcribeError case final error?) throw error;
     return 'Voice transcript';
   }
 
