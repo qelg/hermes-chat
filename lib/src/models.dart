@@ -133,14 +133,23 @@ class ChatMessage {
     final message = ChatMessage.fromJson(json);
     if (message.text.isNotEmpty) result.add(message);
 
-    final toolCalls = json['tool_calls'];
+    final content = json['content'];
+    final toolCalls =
+        json['tool_calls'] ??
+        (content is List
+            ? content
+                  .whereType<Map>()
+                  .where((part) => part['type'] == 'tool_use')
+                  .toList(growable: false)
+            : null);
     if (toolCalls is List) {
       for (final rawCall in toolCalls.whereType<Map>()) {
         final call = rawCall.cast<String, dynamic>();
         final function = call['function'] is Map
             ? (call['function'] as Map).cast<String, dynamic>()
             : const <String, dynamic>{};
-        dynamic arguments = function['arguments'] ?? call['arguments'];
+        dynamic arguments =
+            function['arguments'] ?? call['arguments'] ?? call['input'];
         if (arguments is String) {
           try {
             arguments = jsonDecode(arguments);
