@@ -30,6 +30,7 @@ class ChatController extends ChangeNotifier {
   bool _refreshQueued = false;
   bool _disposed = false;
   int _timelineRevision = 0;
+  int _sendGeneration = 0;
   late final StreamSubscription<void> _reconnectionSubscription;
   List<ChatMessage> _pendingPersistence = const [];
   List<HermesSession> sessions = const [];
@@ -47,20 +48,33 @@ class ChatController extends ChangeNotifier {
     if (!_disposed) super.notifyListeners();
   }
 
-  Future<void> loadSessions() async {
+  Future<void> loadSessions({
+    int? expectedRevision,
+    String? expectedSessionId,
+  }) async {
+    bool isCurrent() =>
+        !_disposed &&
+        (expectedRevision == null || expectedRevision == _timelineRevision) &&
+        (expectedSessionId == null || selected?.id == expectedSessionId);
+    if (!isCurrent()) return;
     loading = true;
     error = null;
     notifyListeners();
     try {
-      sessions = await api.listSessions();
+      final loaded = await api.listSessions();
+      if (!isCurrent()) return;
+      sessions = loaded;
       if (selected != null) {
         selected = sessions.where((s) => s.id == selected!.id).firstOrNull;
       }
     } catch (exception) {
+      if (!isCurrent()) return;
       error = exception.toString();
     } finally {
-      loading = false;
-      notifyListeners();
+      if (isCurrent()) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -80,6 +94,8 @@ class ChatController extends ChangeNotifier {
   Future<void> select(HermesSession session) async {
     _refreshTimer?.cancel();
     _pendingPersistence = const [];
+    _sendGeneration++;
+    sending = false;
     _timelineRevision++;
     final revision = _timelineRevision;
     selected = session;
@@ -209,10 +225,12 @@ class ChatController extends ChangeNotifier {
     final session = selected;
     final clean = text.trim();
     if (session == null || clean.isEmpty || sending) return;
+    final sendGeneration = ++_sendGeneration;
     _timelineRevision++;
     final revision = _timelineRevision;
     bool isCurrentSession() =>
         !_disposed &&
+        sendGeneration == _sendGeneration &&
         revision == _timelineRevision &&
         selected?.id == session.id;
     messages = [...messages, ChatMessage(role: 'user', text: clean)];
@@ -359,7 +377,11 @@ class ChatController extends ChangeNotifier {
             .toList(growable: false);
         await refreshHistory(force: true);
       }
-      await loadSessions();
+      if (!isCurrentSession()) return;
+      await loadSessions(
+        expectedRevision: revision,
+        expectedSessionId: session.id,
+      );
     } catch (exception) {
       if (!isCurrentSession()) return;
       finishPendingTools('failed');
@@ -375,8 +397,10 @@ class ChatController extends ChangeNotifier {
       ];
       error = exception.toString();
     } finally {
-      sending = false;
-      notifyListeners();
+      if (sendGeneration == _sendGeneration) {
+        sending = false;
+        notifyListeners();
+      }
     }
   }
 

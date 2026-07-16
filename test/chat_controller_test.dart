@@ -225,6 +225,50 @@ void main() {
     controller.dispose();
   });
 
+  test('obsolete send cannot reconcile sessions after a switch', () async {
+    final api = _SwitchDuringFinalReconciliationApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First')
+      ..messages = const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ];
+
+    final sending = controller.send('Question for first');
+    await api.finalRefreshStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    api.releaseFinalRefresh.complete(const [
+      ChatMessage(role: 'user', text: 'Question for first', persistedId: '2'),
+      ChatMessage(role: 'assistant', text: 'First reply', persistedId: '3'),
+    ]);
+    await sending;
+
+    expect(api.listSessionsCalls, 0);
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.map((message) => message.text), [
+      'Second history',
+    ]);
+    controller.dispose();
+  });
+
+  test('switching sessions releases send ownership for the new chat', () async {
+    final api = _SendOwnershipApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First');
+
+    final firstSend = controller.send('Question for first');
+    await api.firstStreamStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    final secondSend = controller.send('Question for second');
+    api.releaseFirstStream.complete();
+    await Future.wait([firstSend, secondSend]);
+
+    expect(api.sentSessions, ['first', 'second']);
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.last.text, 'Second reply');
+    expect(controller.sending, isFalse);
+    controller.dispose();
+  });
+
   test('tool events remain in chronological order across turns', () async {
     final api = _ConversationApi();
     final controller = ChatController(api)
@@ -654,6 +698,90 @@ class _SessionSwitchDuringSendApi extends HermesApi {
     ],
     _ => const [
       ChatMessage(role: 'assistant', text: 'Second history', persistedId: '2'),
+    ],
+  };
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _SwitchDuringFinalReconciliationApi extends HermesApi {
+  _SwitchDuringFinalReconciliationApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final finalRefreshStarted = Completer<void>();
+  final releaseFinalRefresh = Completer<List<ChatMessage>>();
+  var listSessionsCalls = 0;
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const CompletedText('First reply');
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) {
+    if (sessionId == 'second') {
+      return Future.value(const [
+        ChatMessage(
+          role: 'assistant',
+          text: 'Second history',
+          persistedId: '4',
+        ),
+      ]);
+    }
+    if (!finalRefreshStarted.isCompleted) finalRefreshStarted.complete();
+    return releaseFinalRefresh.future;
+  }
+
+  @override
+  Future<List<HermesSession>> listSessions() async {
+    listSessionsCalls += 1;
+    return const [HermesSession(id: 'first', title: 'First')];
+  }
+
+  @override
+  void close() {}
+}
+
+class _SendOwnershipApi extends HermesApi {
+  _SendOwnershipApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final firstStreamStarted = Completer<void>();
+  final releaseFirstStream = Completer<void>();
+  final sentSessions = <String>[];
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    sentSessions.add(sessionId);
+    if (sessionId == 'first') {
+      firstStreamStarted.complete();
+      await releaseFirstStream.future;
+      yield const CompletedText('Late first reply');
+    } else {
+      yield const CompletedText('Second reply');
+    }
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(
+    String sessionId,
+  ) async => switch (sessionId) {
+    'first' => const [],
+    _ => const [
+      ChatMessage(role: 'assistant', text: 'Second history', persistedId: '1'),
+      ChatMessage(role: 'user', text: 'Question for second', persistedId: '2'),
+      ChatMessage(role: 'assistant', text: 'Second reply', persistedId: '3'),
     ],
   };
 
