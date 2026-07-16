@@ -85,6 +85,29 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('new session opens the chat immediately on mobile', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(700, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = ChatController(_CreatingHermesApi());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatShell(controller: controller, onSettings: () {}),
+      ),
+    );
+    await tester.tap(find.text('New session'));
+    await tester.pumpAndSettle();
+
+    expect(controller.error, isNull);
+    expect(controller.selected?.id, 'new-session');
+    expect(find.byType(MobileChatPage), findsOneWidget);
+    controller.dispose();
+  });
+
   testWidgets('approval card exposes deny once and permanent choices', (
     tester,
   ) async {
@@ -134,6 +157,15 @@ void main() {
     expect(find.text('After'), findsOneWidget);
     controller.dispose();
   });
+}
+
+class _CreatingHermesApi extends _FakeHermesApi {
+  @override
+  Future<HermesSession> createSession({String? title}) async =>
+      const HermesSession(id: 'new-session', title: 'Untitled session');
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async => const [];
 }
 
 class _FakeHermesApi extends HermesApi {

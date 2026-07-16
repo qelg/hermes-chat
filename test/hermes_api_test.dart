@@ -33,13 +33,50 @@ void main() {
       final api = _api(transport);
 
       final session = await api.createSession();
-      final messages = await api.messages(session.id);
+      final firstMessages = await api.messages(session.id);
+      final secondMessages = await api.messages(session.id);
 
       expect(session.id, 'stored-new');
-      expect(messages, isEmpty);
+      expect(firstMessages, isEmpty);
+      expect(secondMessages, isEmpty);
       expect(
         transport.calls.where((call) => call.$1 == 'session.resume'),
         isEmpty,
+      );
+    },
+  );
+
+  test(
+    'fresh sessions become resumable after the first prompt is accepted',
+    () async {
+      final transport = _FakeTransport()
+        ..responses['session.create'] = {
+          'session_id': 'runtime-1',
+          'stored_session_id': 'stored-new',
+        }
+        ..responses['session.resume'] = {
+          'session_id': 'runtime-2',
+          'messages': [
+            {'role': 'assistant', 'content': 'Saved reply'},
+          ],
+        };
+      transport.onRequest = (method, params) {
+        if (method == 'prompt.submit') {
+          scheduleMicrotask(
+            () => transport.emit('message.complete', {'text': 'Live reply'}),
+          );
+        }
+      };
+      final api = _api(transport);
+
+      final session = await api.createSession();
+      await api.chat(session.id, 'First message').toList();
+      final messages = await api.messages(session.id);
+
+      expect(messages.single.text, 'Saved reply');
+      expect(
+        transport.calls.where((call) => call.$1 == 'session.resume').length,
+        1,
       );
     },
   );

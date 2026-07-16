@@ -33,14 +33,16 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> createSession() async {
+  Future<HermesSession?> createSession() async {
     try {
       final session = await api.createSession();
       sessions = [session, ...sessions];
       await select(session);
+      return session;
     } catch (exception) {
       error = exception.toString();
       notifyListeners();
+      return null;
     }
   }
 
