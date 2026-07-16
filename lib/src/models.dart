@@ -50,6 +50,7 @@ class ChatEvent {
     this.toolName,
     this.toolState,
     this.toolCallId,
+    this.duration,
   });
 
   final ChatEventKind kind;
@@ -58,6 +59,7 @@ class ChatEvent {
   final String? toolName;
   final String? toolState;
   final String? toolCallId;
+  final Duration? duration;
 
   factory ChatEvent.tool({
     required String type,
@@ -66,15 +68,40 @@ class ChatEvent {
     final name =
         payload['name'] ?? payload['tool'] ?? payload['tool_name'] ?? 'tool';
     final state = type.split('.').last;
+    final rawDuration = payload['duration_ms'];
+    final duration = rawDuration is num
+        ? Duration(microseconds: (rawDuration * 1000).round())
+        : null;
+    final durationLabel = duration == null
+        ? ''
+        : ' · ${formatElapsed(duration)}';
     return ChatEvent._(
       kind: ChatEventKind.tool,
-      summary: '$name · $state',
+      summary: '$name · $state$durationLabel',
       details: const JsonEncoder.withIndent('  ').convert(payload),
       toolName: name.toString(),
       toolState: state,
       toolCallId:
-          (payload['tool_call_id'] ?? payload['call_id'] ?? payload['id'])
+          (payload['tool_call_id'] ??
+                  payload['tool_id'] ??
+                  payload['call_id'] ??
+                  payload['id'])
               ?.toString(),
+      duration: duration,
+    );
+  }
+
+  ChatEvent withDuration(Duration value, {String? state}) {
+    final resolvedState = state ?? toolState ?? 'completed';
+    final durationLabel = formatElapsed(value);
+    return ChatEvent._(
+      kind: kind,
+      summary: '${toolName ?? 'tool'} · $resolvedState · $durationLabel',
+      details: details,
+      toolName: toolName,
+      toolState: resolvedState,
+      toolCallId: toolCallId,
+      duration: value,
     );
   }
 
@@ -82,10 +109,18 @@ class ChatEvent {
       ChatEvent._(kind: ChatEventKind.status, summary: text, details: text);
 }
 
+String formatElapsed(Duration value) =>
+    '${(value.inMicroseconds / Duration.microsecondsPerSecond).toStringAsFixed(1)} s';
+
 enum ChatEventKind { tool, status }
 
 class ChatMessage {
-  const ChatMessage({required this.role, required this.text, this.event});
+  const ChatMessage({
+    required this.role,
+    required this.text,
+    this.event,
+    this.duration,
+  });
 
   factory ChatMessage.tool(ChatEvent event) =>
       ChatMessage(role: '_tool', text: '', event: event);
@@ -93,6 +128,7 @@ class ChatMessage {
   final String role;
   final String text;
   final ChatEvent? event;
+  final Duration? duration;
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final role = (json['role'] ?? 'assistant').toString();
@@ -185,19 +221,24 @@ class MessageTimelineBlock extends TimelineBlock {
 }
 
 List<ChatEvent> _representativeToolCalls(List<ChatEvent> events) {
-  final started = events
-      .where((event) => event.toolState == 'started')
-      .toList();
-  final candidates = started.isNotEmpty
-      ? started
-      : events.where((event) => event.toolState == 'completed').toList();
+  final started = events.where((event) => event.toolState == 'started');
+  final representatives = <ChatEvent>[];
   final seenIds = <String>{};
-  return candidates
-      .where((event) {
-        final id = event.toolCallId;
-        return id == null || seenIds.add(id);
-      })
-      .toList(growable: false);
+  for (final event in started) {
+    final id = event.toolCallId;
+    if (id == null || seenIds.add(id)) representatives.add(event);
+  }
+  final hasStarted = representatives.isNotEmpty;
+  for (final event in events) {
+    if (event.toolState == 'started') continue;
+    final id = event.toolCallId;
+    if (id != null && seenIds.add(id)) {
+      representatives.add(event);
+    } else if (id == null && !hasStarted) {
+      representatives.add(event);
+    }
+  }
+  return representatives;
 }
 
 class ToolGroupTimelineBlock extends TimelineBlock {

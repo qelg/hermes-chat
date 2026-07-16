@@ -33,6 +33,34 @@ void main() {
     expect(event.summary, contains('terminal'));
     expect(event.details, contains('"output": "ok"'));
   });
+
+  test('completed tool events show elapsed seconds compactly', () {
+    final event = ChatEvent.tool(
+      type: 'tool.completed',
+      payload: {'name': 'terminal', 'output': 'ok', 'duration_ms': 3200},
+    );
+
+    expect(event.summary, 'terminal · completed · 3.2 s');
+  });
+  test('groups failed-only tool histories without losing compactness', () {
+    final messages = [
+      for (var i = 0; i < 4; i++)
+        ChatMessage.tool(
+          ChatEvent.tool(
+            type: 'tool.failed',
+            payload: {'tool_call_id': 'failed-$i', 'tool_name': 'terminal'},
+          ),
+        ),
+    ];
+
+    final blocks = groupTimeline(messages);
+
+    expect(blocks, hasLength(1));
+    final group = blocks.single as ToolGroupTimelineBlock;
+    expect(group.callCount, 4);
+    expect(group.counts, {'terminal': 4});
+  });
+
   test('groups four consecutive tool calls without changing chronology', () {
     ChatMessage tool(String state, String id, String name) => ChatMessage.tool(
       ChatEvent.tool(
