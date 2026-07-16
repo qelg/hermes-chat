@@ -32,7 +32,7 @@ class _HermesChatAppState extends State<HermesChatApp> {
   Future<void> _restore() async {
     try {
       final config = await _store.load();
-      if (config != null) await _connect(config, verify: false);
+      if (config != null) await _connect(config);
     } finally {
       if (mounted) setState(() => _initializing = false);
     }
@@ -42,6 +42,8 @@ class _HermesChatAppState extends State<HermesChatApp> {
     ConnectionConfig config, {
     bool verify = true,
   }) async {
+    final validationError = config.validationError;
+    if (validationError != null) return validationError;
     final api = HermesApi(config);
     try {
       if (verify) await api.checkHealth();
@@ -118,7 +120,7 @@ class ConnectionScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'Connect to your private Hermes API Server. Sessions stay native to Hermes—no messenger topics required.',
+                  'Connect to the same private Hermes backend as Hermes Desktop. Sessions, tools, voice, and approvals stay native to Hermes.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
@@ -159,12 +161,14 @@ class ConnectionDialog extends StatefulWidget {
 
 class _ConnectionDialogState extends State<ConnectionDialog> {
   final _url = TextEditingController();
-  final _token = TextEditingController();
+  final _username = TextEditingController();
+  final _password = TextEditingController();
 
   @override
   void dispose() {
     _url.dispose();
-    _token.dispose();
+    _username.dispose();
+    _password.dispose();
     super.dispose();
   }
 
@@ -187,9 +191,15 @@ class _ConnectionDialogState extends State<ConnectionDialog> {
             ),
             const SizedBox(height: 14),
             TextField(
-              controller: _token,
+              controller: _username,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(labelText: 'Username'),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _password,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'API bearer token'),
+              decoration: const InputDecoration(labelText: 'Password'),
             ),
           ],
         ),
@@ -201,10 +211,18 @@ class _ConnectionDialogState extends State<ConnectionDialog> {
         ),
         FilledButton(
           onPressed: () {
-            if (_url.text.trim().isEmpty || _token.text.trim().isEmpty) return;
+            if (_url.text.trim().isEmpty ||
+                _username.text.trim().isEmpty ||
+                _password.text.isEmpty) {
+              return;
+            }
             Navigator.pop(
               context,
-              ConnectionConfig(baseUrl: _url.text, token: _token.text),
+              ConnectionConfig(
+                baseUrl: _url.text,
+                username: _username.text,
+                password: _password.text,
+              ),
             );
           },
           child: const Text('Connect'),
@@ -518,6 +536,11 @@ class _ChatPaneState extends State<ChatPane> {
               ],
             ),
           ),
+          if (controller.pendingApproval case final request?)
+            ApprovalCard(
+              request: request,
+              onChoice: controller.respondApproval,
+            ),
           Container(
             constraints: const BoxConstraints(maxWidth: 920),
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -550,13 +573,19 @@ class _ChatPaneState extends State<ChatPane> {
                       ),
                     ),
                     IconButton(
-                      onPressed:
-                          controller.sending ||
-                              controller.transcribing ||
-                              _recording
+                      tooltip: controller.sending
+                          ? 'Stop response'
+                          : 'Send message',
+                      onPressed: controller.transcribing || _recording
                           ? null
+                          : controller.sending
+                          ? controller.interrupt
                           : _send,
-                      icon: const Icon(Icons.arrow_upward_rounded),
+                      icon: Icon(
+                        controller.sending
+                            ? Icons.stop_circle_outlined
+                            : Icons.arrow_upward_rounded,
+                      ),
                     ),
                   ],
                 ),
@@ -624,6 +653,70 @@ class _ChatPaneState extends State<ChatPane> {
     if (text.trim().isEmpty) return;
     _input.clear();
     widget.controller.send(text);
+  }
+}
+
+class ApprovalCard extends StatelessWidget {
+  const ApprovalCard({
+    super.key,
+    required this.request,
+    required this.onChoice,
+  });
+
+  final ApprovalRequest request;
+  final ValueChanged<String> onChoice;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF221E16),
+        border: Border.all(color: const Color(0xFF66542D)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Hermes needs your approval',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          if (request.description.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(request.description),
+          ],
+          if (request.command.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              request.command,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: () => onChoice('deny'),
+                child: const Text('Deny'),
+              ),
+              FilledButton.tonal(
+                onPressed: () => onChoice('once'),
+                child: const Text('Allow once'),
+              ),
+              if (request.allowPermanent)
+                FilledButton(
+                  onPressed: () => onChoice('always'),
+                  child: const Text('Always allow'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 

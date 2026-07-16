@@ -13,6 +13,7 @@ class ChatController extends ChangeNotifier {
   bool loading = false;
   bool sending = false;
   bool transcribing = false;
+  ApprovalRequest? pendingApproval;
   String? error;
 
   Future<void> loadSessions() async {
@@ -97,16 +98,19 @@ class ChatController extends ChangeNotifier {
               ChatMessage(role: '_draft', text: response),
             ];
           case CompletedText(:final text):
-            response = text;
+            if (text.isNotEmpty) response = text;
             final withoutDraft = messages
                 .where((m) => m.role != '_draft')
                 .toList();
             messages = [
               ...withoutDraft,
-              ChatMessage(role: '_draft', text: response),
+              if (response.isNotEmpty)
+                ChatMessage(role: '_draft', text: response),
             ];
           case ToolUpdate(:final event):
             messages = [...messages, ChatMessage.tool(event)];
+          case ApprovalUpdate(:final request):
+            pendingApproval = request;
         }
         notifyListeners();
       }
@@ -118,10 +122,6 @@ class ChatController extends ChangeNotifier {
       } else {
         messages = await api.messages(session.id);
       }
-      if (session.title == 'Untitled session') {
-        final title = _titleFromFirstMessage(clean);
-        await api.updateSessionTitle(session.id, title);
-      }
       await loadSessions();
     } catch (exception) {
       messages = messages.where((m) => m.role != '_draft').toList();
@@ -132,15 +132,32 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  Future<void> respondApproval(String choice) async {
+    final request = pendingApproval;
+    if (request == null) return;
+    try {
+      await api.respondApproval(request, choice);
+      pendingApproval = null;
+    } catch (exception) {
+      error = exception.toString();
+    }
+    notifyListeners();
+  }
+
+  Future<void> interrupt() async {
+    final session = selected;
+    if (session == null || !sending) return;
+    try {
+      await api.interrupt(session.id);
+    } catch (exception) {
+      error = exception.toString();
+      notifyListeners();
+    }
+  }
+
   @override
   void dispose() {
     api.close();
     super.dispose();
   }
-}
-
-String _titleFromFirstMessage(String message) {
-  final normalized = message.replaceAll(RegExp(r'\s+'), ' ').trim();
-  if (normalized.length <= 48) return normalized;
-  return '${normalized.substring(0, 47).trimRight()}…';
 }

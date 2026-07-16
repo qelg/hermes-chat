@@ -2,26 +2,29 @@
 
 A focused Flutter client for Hermes Agent on Android and Linux.
 
-The app talks directly to Hermes' authenticated API Server and uses the Sessions API for native chat history and SSE tool progress.
+The app connects to the same authenticated `hermes serve` backend as Hermes Desktop. Chat, session history, tool activity, approvals, interruption, and voice transcription therefore use Hermes' native WebSocket/JSON-RPC and HTTP surfaces rather than the OpenAI-compatible API Server.
 
 ## MVP features
 
 - Responsive session list (desktop split view, mobile navigation)
 - Create and resume native Hermes sessions
 - Search sessions by title and preview text
-- Record voice messages and transcribe them through Hermes' authenticated local STT endpoint
-- Streaming assistant responses through the Sessions API
-- Chronological tool progress, automatically grouped after four calls with expandable details
-- Configurable server URL and bearer token stored in platform secure storage
+- Record voice messages and transcribe them through Hermes' built-in `/api/audio/transcribe` endpoint
+- Stream assistant responses and structured tool activity over `/api/ws`
+- Review dangerous tool requests and allow once, always allow, or deny
+- Interrupt a running response
+- Group four or more consecutive tool calls with expandable details
+- Store backend URL and credentials in platform secure storage
 - Android and Linux targets with CI release artifacts
 
 ## Hermes setup
 
-Enable the API Server on the Hermes host and expose it only through a trusted HTTPS path (for example Tailscale Serve):
+Run an authenticated `hermes serve` backend. Hermes Chat supports the same username/password login used by Hermes Desktop:
 
-```dotenv
-API_SERVER_ENABLED=true
-API_SERVER_KEY=<strong-random-secret>
+```bash
+hermes serve --host 0.0.0.0 --port 9119
 ```
 
-The app expects a base URL such as `https://hermes.example.ts.net` (without `/v1`). Never expose the API Server directly to the public internet: it has access to Hermes' full toolset.
+The server must have `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, a password or password hash, and a stable `HERMES_DASHBOARD_BASIC_AUTH_SECRET` configured. Keep it on a trusted network such as Tailscale; never expose a password-authenticated Hermes backend directly to the public internet.
+
+HTTPS is required for public hosts. Plain HTTP is accepted only for localhost, private-network addresses, and Tailscale hosts because the underlying tunnel already encrypts tailnet traffic.

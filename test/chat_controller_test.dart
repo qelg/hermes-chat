@@ -50,18 +50,20 @@ void main() {
     expect(controller.messages.first.text, 'Voice transcript');
   });
 
-  test('first message gives an untitled session a stable title', () async {
-    final api = _ConversationApi();
+  test('surfaces and resolves Hermes tool approvals', () async {
+    final api = _ConversationApi()..emitApproval = true;
     final controller = ChatController(api)
       ..selected = const HermesSession(
         id: 'session-1',
-        title: 'Untitled session',
+        title: 'Existing session',
       );
 
-    await controller.send('Fix session titles');
+    await controller.send('Run it');
+    expect(controller.pendingApproval?.command, 'sudo true');
 
-    expect(api.updatedTitle, 'Fix session titles');
-    expect(controller.selected?.title, 'Fix session titles');
+    await controller.respondApproval('once');
+    expect(api.approvalChoice, 'once');
+    expect(controller.pendingApproval, isNull);
     controller.dispose();
   });
 }
@@ -73,7 +75,8 @@ class _ConversationApi extends HermesApi {
       );
 
   var turn = 0;
-  String? updatedTitle;
+  bool emitApproval = false;
+  String? approvalChoice;
   String? transcribedPath;
 
   @override
@@ -83,8 +86,8 @@ class _ConversationApi extends HermesApi {
   }
 
   @override
-  Future<void> updateSessionTitle(String sessionId, String title) async {
-    updatedTitle = title;
+  Future<void> respondApproval(ApprovalRequest request, String choice) async {
+    approvalChoice = choice;
   }
 
   @override
@@ -102,12 +105,22 @@ class _ConversationApi extends HermesApi {
         payload: {'tool_name': 'terminal', 'turn': turn},
       ),
     );
+    if (emitApproval) {
+      yield const ApprovalUpdate(
+        ApprovalRequest(
+          sessionId: 'runtime-1',
+          command: 'sudo true',
+          description: 'Run command',
+          allowPermanent: true,
+        ),
+      );
+    }
     yield CompletedText('Answer $turn');
   }
 
   @override
   Future<List<HermesSession>> listSessions() async => [
-    HermesSession(id: 'session-1', title: updatedTitle ?? 'Existing session'),
+    const HermesSession(id: 'session-1', title: 'Existing session'),
   ];
 
   @override
