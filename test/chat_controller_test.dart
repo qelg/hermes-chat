@@ -175,6 +175,56 @@ void main() {
     controller.dispose();
   });
 
+  test('disconnect errors do not prevent reconnect reconciliation', () async {
+    final api = _ReconnectApi();
+    final uncaught = <Object>[];
+
+    await runZonedGuarded(() async {
+      final controller = ChatController(api)
+        ..selected = const HermesSession(
+          id: 'session-1',
+          title: 'Existing session',
+        )
+        ..messages = const [ChatMessage(role: 'assistant', text: 'Initial')];
+      api.emitDisconnectError();
+      await Future<void>.delayed(Duration.zero);
+
+      api.history = const [
+        ChatMessage(role: 'assistant', text: 'Initial'),
+        ChatMessage(role: 'user', text: 'After reconnect'),
+      ];
+      api.emitReconnect();
+      await api.refreshObserved.future;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.messages.last.text, 'After reconnect');
+      controller.dispose();
+    }, (error, _) => uncaught.add(error));
+
+    expect(uncaught, isEmpty);
+  });
+
+  test('switching sessions while sending cannot mutate the new chat', () async {
+    final api = _SessionSwitchDuringSendApi();
+    final controller = ChatController(api)
+      ..selected = const HermesSession(id: 'first', title: 'First')
+      ..messages = const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ];
+
+    final sending = controller.send('Question for first');
+    await api.streamStarted.future;
+    await controller.select(const HermesSession(id: 'second', title: 'Second'));
+    api.releaseStream.complete();
+    await sending;
+
+    expect(controller.selected?.id, 'second');
+    expect(controller.messages.map((message) => message.text), [
+      'Second history',
+    ]);
+    controller.dispose();
+  });
+
   test('tool events remain in chronological order across turns', () async {
     final api = _ConversationApi();
     final controller = ChatController(api)
@@ -560,6 +610,10 @@ class _ReconnectApi extends HermesApi {
 
   void emitReconnect() => reconnectController.add(null);
 
+  void emitDisconnectError() {
+    reconnectController.addError(Exception('disconnected'));
+  }
+
   @override
   Future<List<ChatMessage>> messages(String sessionId) async {
     if (!refreshObserved.isCompleted) refreshObserved.complete();
@@ -570,6 +624,47 @@ class _ReconnectApi extends HermesApi {
   void close() {
     unawaited(reconnectController.close());
   }
+}
+
+class _SessionSwitchDuringSendApi extends HermesApi {
+  _SessionSwitchDuringSendApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final streamStarted = Completer<void>();
+  final releaseStream = Completer<void>();
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    yield const HistoryUpdate([
+      ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+    ]);
+    streamStarted.complete();
+    await releaseStream.future;
+    yield const CompletedText('Late reply for first');
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(
+    String sessionId,
+  ) async => switch (sessionId) {
+    'first' => const [
+      ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+    ],
+    _ => const [
+      ChatMessage(role: 'assistant', text: 'Second history', persistedId: '2'),
+    ],
+  };
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
 }
 
 class _InterleavedConversationApi extends HermesApi {

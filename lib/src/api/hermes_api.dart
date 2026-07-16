@@ -368,7 +368,7 @@ class HermesServeTransport implements HermesTransport {
       '/api/sessions/$encoded/messages',
     );
     final rows = response['messages'];
-    if (rows is! List) {
+    if (rows is! List || rows.any((row) => row is! Map)) {
       throw const HermesStreamException(
         'Hermes session history has no valid messages list',
       );

@@ -13,6 +13,7 @@ class ChatController extends ChangeNotifier {
   }) : _elapsed = elapsed ?? _startClock() {
     _reconnectionSubscription = api.reconnections.listen(
       (_) => unawaited(refreshHistory()),
+      onError: (_) {},
     );
   }
 
@@ -209,6 +210,11 @@ class ChatController extends ChangeNotifier {
     final clean = text.trim();
     if (session == null || clean.isEmpty || sending) return;
     _timelineRevision++;
+    final revision = _timelineRevision;
+    bool isCurrentSession() =>
+        !_disposed &&
+        revision == _timelineRevision &&
+        selected?.id == session.id;
     messages = [...messages, ChatMessage(role: 'user', text: clean)];
     sending = true;
     error = null;
@@ -258,6 +264,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     try {
       await for (final update in api.chat(session.id, clean)) {
+        if (!isCurrentSession()) continue;
         switch (update) {
           case HistoryUpdate(:final messages):
             this.messages = [
@@ -326,6 +333,7 @@ class ChatController extends ChangeNotifier {
         }
         notifyListeners();
       }
+      if (!isCurrentSession()) return;
       if (toolStarts.isNotEmpty) finishPendingTools('cancelled');
       if (response.isNotEmpty) {
         messages = [
@@ -338,7 +346,9 @@ class ChatController extends ChangeNotifier {
           ),
         ];
       } else if (!receivedTool) {
-        messages = await api.messages(session.id);
+        final canonical = await api.messages(session.id);
+        if (!isCurrentSession()) return;
+        messages = canonical;
       }
       if (completed) {
         _pendingPersistence = messages
@@ -351,6 +361,7 @@ class ChatController extends ChangeNotifier {
       }
       await loadSessions();
     } catch (exception) {
+      if (!isCurrentSession()) return;
       finishPendingTools('failed');
       final withoutDraft = messages.where((m) => m.role != '_draft').toList();
       messages = [
