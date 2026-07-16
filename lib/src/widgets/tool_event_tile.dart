@@ -1,6 +1,44 @@
 import 'package:flutter/material.dart';
 import '../models.dart';
 
+IconData toolIconForName(String? rawName) {
+  final name = (rawName ?? '')
+      .toLowerCase()
+      .split('.')
+      .last
+      .replaceAll('-', '_');
+
+  if (name == 'terminal' || name == 'process' || name == 'execute_code') {
+    return Icons.terminal_rounded;
+  }
+  if (name == 'read_file') return Icons.description_outlined;
+  if (name == 'write_file' || name == 'patch') return Icons.edit_note_rounded;
+  if (name == 'search_files') return Icons.folder_open_outlined;
+  if (name.startsWith('web_') ||
+      name.startsWith('browser_') ||
+      name.startsWith('computer_')) {
+    return Icons.public_rounded;
+  }
+  if (name.startsWith('github') || name.startsWith('git_')) {
+    return Icons.account_tree_outlined;
+  }
+  if (name.startsWith('image_') || name == 'vision_analyze') {
+    return Icons.image_outlined;
+  }
+  if (name.contains('audio') ||
+      name.contains('speech') ||
+      name.startsWith('voice_')) {
+    return Icons.audio_file_outlined;
+  }
+  if (name.contains('video')) return Icons.movie_outlined;
+  if (name == 'cronjob' ||
+      name.startsWith('schedule_') ||
+      name.startsWith('calendar_')) {
+    return Icons.calendar_month_outlined;
+  }
+  return Icons.build_outlined;
+}
+
 class ToolEventTile extends StatelessWidget {
   const ToolEventTile({super.key, required this.event});
 
@@ -19,7 +57,7 @@ class ToolEventTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: ExpansionTile(
           dense: true,
-          leading: const Icon(Icons.terminal_rounded, size: 17),
+          leading: Icon(toolIconForName(event.toolName), size: 17),
           title: Text(
             event.summary,
             style: Theme.of(context).textTheme.labelMedium,
