@@ -120,15 +120,22 @@ class ChatMessage {
     required this.text,
     this.event,
     this.duration,
+    this.persistedId,
   });
 
-  factory ChatMessage.tool(ChatEvent event) =>
-      ChatMessage(role: '_tool', text: '', event: event);
+  factory ChatMessage.tool(ChatEvent event, {String? persistedId}) =>
+      ChatMessage(
+        role: '_tool',
+        text: '',
+        event: event,
+        persistedId: persistedId,
+      );
 
   final String role;
   final String text;
   final ChatEvent? event;
   final Duration? duration;
+  final String? persistedId;
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final role = (json['role'] ?? 'assistant').toString();
@@ -145,11 +152,16 @@ class ChatMessage {
     } else {
       text = raw.toString();
     }
-    return ChatMessage(role: role, text: text);
+    return ChatMessage(
+      role: role,
+      text: text,
+      persistedId: json['id']?.toString(),
+    );
   }
 
   static List<ChatMessage> fromJsonMany(Map<String, dynamic> json) {
     final role = (json['role'] ?? 'assistant').toString();
+    final persistedId = json['id']?.toString();
     if (role == 'tool') {
       return [
         ChatMessage.tool(
@@ -161,6 +173,7 @@ class ChatMessage {
               'result': json['content'] ?? json['text'] ?? '',
             },
           ),
+          persistedId: persistedId,
         ),
       ];
     }
@@ -203,6 +216,7 @@ class ChatMessage {
                 'args': arguments,
               },
             ),
+            persistedId: persistedId,
           ),
         );
       }
