@@ -24,6 +24,27 @@ void main() {
     expect(find.textContaining('secret detail'), findsOneWidget);
   });
 
+  testWidgets('assistant messages show elapsed generation time', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: 'assistant',
+              text: 'Done',
+              duration: Duration(milliseconds: 3200),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Done'), findsOneWidget);
+    expect(find.text('3.2 s'), findsOneWidget);
+  });
+
   testWidgets('tool groups summarize actual calls by tool type', (
     tester,
   ) async {

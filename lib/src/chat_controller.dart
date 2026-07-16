@@ -4,9 +4,16 @@ import 'api/hermes_api.dart';
 import 'models.dart';
 
 class ChatController extends ChangeNotifier {
-  ChatController(this.api);
+  ChatController(this.api, {Duration Function()? elapsed})
+    : _elapsed = elapsed ?? _startClock();
+
+  static Duration Function() _startClock() {
+    final stopwatch = Stopwatch()..start();
+    return () => stopwatch.elapsed;
+  }
 
   final HermesApi api;
+  final Duration Function() _elapsed;
   List<HermesSession> sessions = const [];
   List<ChatMessage> messages = const [];
   HermesSession? selected;
@@ -94,20 +101,72 @@ class ChatController extends ChangeNotifier {
     sending = true;
     error = null;
     var response = '';
+    var generationElapsed = Duration.zero;
+    var generationStartedAt = _elapsed();
+    var generationRunning = true;
+    Duration? generationDuration;
+    var receivedTool = false;
+    final toolStarts = <String, Duration>{};
+
+    Duration currentGenerationDuration(Duration now) =>
+        generationElapsed +
+        (generationRunning ? now - generationStartedAt : Duration.zero);
+
+    void pauseGeneration(Duration now) {
+      if (!generationRunning) return;
+      generationElapsed += now - generationStartedAt;
+      generationRunning = false;
+    }
+
+    void resumeGeneration(Duration now) {
+      if (generationRunning || toolStarts.isNotEmpty) return;
+      generationStartedAt = now;
+      generationRunning = true;
+    }
+
+    void finishPendingTools(String state) {
+      final finishedAt = _elapsed();
+      final terminalMessages = toolStarts.entries.map((entry) {
+        final startedEvent = messages
+            .map((message) => message.event)
+            .whereType<ChatEvent>()
+            .lastWhere(
+              (event) =>
+                  event.toolCallId == entry.key && event.toolState == 'started',
+            );
+        return ChatMessage.tool(
+          startedEvent.withDuration(finishedAt - entry.value, state: state),
+        );
+      });
+      messages = [...messages, ...terminalMessages];
+      toolStarts.clear();
+    }
+
     notifyListeners();
     try {
       await for (final update in api.chat(session.id, clean)) {
         switch (update) {
           case TextDelta(:final text):
+            final now = _elapsed();
+            if (!generationRunning && toolStarts.isEmpty) {
+              generationStartedAt = now;
+              generationRunning = true;
+            }
             response += text;
             final withoutDraft = messages
                 .where((m) => m.role != '_draft')
                 .toList();
             messages = [
               ...withoutDraft,
-              ChatMessage(role: '_draft', text: response),
+              ChatMessage(
+                role: '_draft',
+                text: response,
+                duration: currentGenerationDuration(now),
+              ),
             ];
           case CompletedText(:final text):
+            final completedAt = _elapsed();
+            generationDuration = currentGenerationDuration(completedAt);
             if (text.isNotEmpty) response = text;
             final withoutDraft = messages
                 .where((m) => m.role != '_draft')
@@ -115,26 +174,66 @@ class ChatController extends ChangeNotifier {
             messages = [
               ...withoutDraft,
               if (response.isNotEmpty)
-                ChatMessage(role: '_draft', text: response),
+                ChatMessage(
+                  role: '_draft',
+                  text: response,
+                  duration: generationDuration,
+                ),
             ];
           case ToolUpdate(:final event):
-            messages = [...messages, ChatMessage.tool(event)];
+            receivedTool = true;
+            final id = event.toolCallId;
+            var timedEvent = event;
+            if (id != null && event.toolState == 'started') {
+              final startedAt = _elapsed();
+              pauseGeneration(startedAt);
+              toolStarts.putIfAbsent(id, () => startedAt);
+            } else if (id != null &&
+                const {
+                  'completed',
+                  'failed',
+                  'cancelled',
+                }.contains(event.toolState)) {
+              final completedAt = _elapsed();
+              final started = toolStarts.remove(id);
+              if (started != null) {
+                timedEvent = event.withDuration(completedAt - started);
+              }
+              if (toolStarts.isEmpty) resumeGeneration(completedAt);
+            }
+            messages = [...messages, ChatMessage.tool(timedEvent)];
           case ApprovalUpdate(:final request):
             pendingApproval = request;
         }
         notifyListeners();
       }
+      if (toolStarts.isNotEmpty) finishPendingTools('cancelled');
       if (response.isNotEmpty) {
         messages = [
           ...messages.where((m) => m.role != '_draft'),
-          ChatMessage(role: 'assistant', text: response),
+          ChatMessage(
+            role: 'assistant',
+            text: response,
+            duration:
+                generationDuration ?? currentGenerationDuration(_elapsed()),
+          ),
         ];
-      } else {
+      } else if (!receivedTool) {
         messages = await api.messages(session.id);
       }
       await loadSessions();
     } catch (exception) {
-      messages = messages.where((m) => m.role != '_draft').toList();
+      finishPendingTools('failed');
+      final withoutDraft = messages.where((m) => m.role != '_draft').toList();
+      messages = [
+        ...withoutDraft,
+        if (response.isNotEmpty)
+          ChatMessage(
+            role: 'assistant',
+            text: response,
+            duration: currentGenerationDuration(_elapsed()),
+          ),
+      ];
       error = exception.toString();
     } finally {
       sending = false;

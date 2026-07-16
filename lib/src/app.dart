@@ -821,7 +821,22 @@ class MessageBubble extends StatelessWidget {
           border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: SelectableText(message.text),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(message.text),
+            if (message.duration case final duration?) ...[
+              const SizedBox(height: 5),
+              Text(
+                formatElapsed(duration),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Colors.white.withValues(alpha: 0.55),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
