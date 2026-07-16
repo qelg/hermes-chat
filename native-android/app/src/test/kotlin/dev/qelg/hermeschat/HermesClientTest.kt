@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -21,6 +22,29 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class HermesClientTest {
+    @Test
+    fun historyTreatsNullMessagesAsEmpty() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"messages":null}""")
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            assertEquals(emptyList<JsonObject>(), client.history("existing-session"))
+            assertEquals("/api/sessions/existing-session/messages", server.takeRequest().path)
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
     @Test
     fun websocketBurstIsDeliveredWithoutDroppingEvents() = runBlocking {
         val server = MockWebServer()
