@@ -285,6 +285,16 @@ class _ChatShellState extends State<ChatShell> {
           );
         }
       },
+      onCreated: (_) {
+        if (!wide && context.mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MobileChatPage(controller: widget.controller),
+            ),
+          );
+        }
+      },
       onSettings: widget.onSettings,
     );
     if (!wide) return Scaffold(body: sidebar);
@@ -305,10 +315,12 @@ class SessionSidebar extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onSelected,
+    this.onCreated,
     required this.onSettings,
   });
   final ChatController controller;
   final ValueChanged<HermesSession> onSelected;
+  final ValueChanged<HermesSession>? onCreated;
   final VoidCallback onSettings;
 
   @override
@@ -380,7 +392,10 @@ class _SessionSidebarState extends State<SessionSidebar> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: FilledButton.icon(
-                onPressed: controller.createSession,
+                onPressed: () async {
+                  final session = await controller.createSession();
+                  if (session != null) widget.onCreated?.call(session);
+                },
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('New session'),
                 style: FilledButton.styleFrom(

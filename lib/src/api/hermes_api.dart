@@ -108,7 +108,7 @@ class HermesApi {
   }
 
   Future<List<ChatMessage>> messages(String sessionId) async {
-    if (_freshSessions.remove(sessionId)) return const [];
+    if (_freshSessions.contains(sessionId)) return const [];
     final result = await _resume(sessionId);
     return _messagesFromResult(result);
   }
@@ -161,6 +161,7 @@ class HermesApi {
         'session_id': runtimeId,
         'text': input,
       });
+      _freshSessions.remove(storedId);
       await for (final event in incoming.stream) {
         final update = _toUpdate(event, runtimeId);
         if (update != null) yield update;
