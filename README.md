@@ -8,8 +8,10 @@ The app talks directly to Hermes' authenticated API Server and uses the Sessions
 
 - Responsive session list (desktop split view, mobile navigation)
 - Create and resume native Hermes sessions
+- Search sessions by title and preview text
+- Record voice messages and transcribe them through Hermes' authenticated local STT endpoint
 - Streaming assistant responses through the Sessions API
-- Compact tool-progress rows with expandable raw details
+- Chronological tool progress, automatically grouped after four calls with expandable details
 - Configurable server URL and bearer token stored in platform secure storage
 - Android and Linux targets with CI release artifacts
 

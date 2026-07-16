@@ -107,6 +107,29 @@ class HermesApi {
         .toList(growable: false);
   }
 
+  Future<String> transcribeAudio(String path) async {
+    final request =
+        http.MultipartRequest('POST', _uri('/v1/audio/transcriptions'))
+          ..headers.addAll({
+            'Authorization': 'Bearer ${config.token}',
+            'Accept': 'application/json',
+          });
+    request.files.add(await http.MultipartFile.fromPath('file', path));
+    final response = await _client.send(request);
+    final body = await response.stream.bytesToString();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HermesApiException(response.statusCode, body);
+    }
+    final decoded = jsonDecode(body);
+    final transcript = decoded is Map
+        ? (decoded['text'] ?? decoded['transcript'])?.toString().trim()
+        : null;
+    if (transcript == null || transcript.isEmpty) {
+      throw const HermesStreamException('Transcription returned no text');
+    }
+    return transcript;
+  }
+
   Stream<StreamUpdate> chat(String sessionId, String input) async* {
     final request =
         http.Request(

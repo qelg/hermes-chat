@@ -43,3 +43,44 @@ class ToolEventTile extends StatelessWidget {
     );
   }
 }
+
+class ToolGroupTile extends StatelessWidget {
+  const ToolGroupTile({super.key, required this.group});
+
+  final ToolGroupTimelineBlock group;
+
+  @override
+  Widget build(BuildContext context) {
+    final breakdown = group.counts.entries
+        .map((entry) => '${entry.key} ×${entry.value}')
+        .join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.035),
+        shape: RoundedRectangleBorder(
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          leading: const Icon(Icons.build_circle_outlined, size: 19),
+          title: Text(
+            '${group.callCount} tool calls',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+          subtitle: Text(
+            breakdown,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+          children: group.events
+              .map((event) => ToolEventTile(event: event))
+              .toList(growable: false),
+        ),
+      ),
+    );
+  }
+}

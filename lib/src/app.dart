@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import 'api/hermes_api.dart';
 import 'chat_controller.dart';
@@ -278,7 +282,7 @@ class _ChatShellState extends State<ChatShell> {
   }
 }
 
-class SessionSidebar extends StatelessWidget {
+class SessionSidebar extends StatefulWidget {
   const SessionSidebar({
     super.key,
     required this.controller,
@@ -290,8 +294,21 @@ class SessionSidebar extends StatelessWidget {
   final VoidCallback onSettings;
 
   @override
+  State<SessionSidebar> createState() => _SessionSidebarState();
+}
+
+class _SessionSidebarState extends State<SessionSidebar> {
+  bool _searching = false;
+  String _query = '';
+
+  ChatController get controller => widget.controller;
+  ValueChanged<HermesSession> get onSelected => widget.onSelected;
+  VoidCallback get onSettings => widget.onSettings;
+
+  @override
   Widget build(BuildContext context) {
-    return ColoredBox(
+    final visibleSessions = filterSessions(controller.sessions, _query);
+    return Material(
       color: const Color(0xFF0F1011),
       child: SafeArea(
         child: Column(
@@ -315,12 +332,33 @@ class SessionSidebar extends StatelessWidget {
                     ),
                   ),
                   IconButton(
+                    tooltip: _searching ? 'Close search' : 'Search sessions',
+                    onPressed: () => setState(() {
+                      _searching = !_searching;
+                      if (!_searching) _query = '';
+                    }),
+                    icon: Icon(_searching ? Icons.close : Icons.search),
+                  ),
+                  IconButton(
                     onPressed: onSettings,
                     icon: const Icon(Icons.settings_outlined),
                   ),
                 ],
               ),
             ),
+            if (_searching)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: TextField(
+                  autofocus: true,
+                  onChanged: (value) => setState(() => _query = value),
+                  decoration: const InputDecoration(
+                    hintText: 'Search sessions…',
+                    prefixIcon: Icon(Icons.search, size: 19),
+                    isDense: true,
+                  ),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: FilledButton.icon(
@@ -339,9 +377,9 @@ class SessionSidebar extends StatelessWidget {
                 onRefresh: controller.loadSessions,
                 child: ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: controller.sessions.length,
+                  itemCount: visibleSessions.length,
                   itemBuilder: (context, index) {
-                    final session = controller.sessions[index];
+                    final session = visibleSessions[index];
                     final selected = controller.selected?.id == session.id;
                     return ListTile(
                       selected: selected,
@@ -410,11 +448,14 @@ class ChatPane extends StatefulWidget {
 class _ChatPaneState extends State<ChatPane> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  final _recorder = AudioRecorder();
+  bool _recording = false;
 
   @override
   void dispose() {
     _input.dispose();
     _scroll.dispose();
+    _recorder.dispose();
     super.dispose();
   }
 
@@ -451,13 +492,17 @@ class _ChatPaneState extends State<ChatPane> {
               controller: _scroll,
               padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
               children: [
-                ...controller.messages.map(
-                  (message) => message.event == null
-                      ? MessageBubble(message: message)
-                      : Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: ToolEventTile(event: message.event!),
-                        ),
+                ...groupTimeline(controller.messages).map(
+                  (block) => switch (block) {
+                    ToolGroupTimelineBlock() => ToolGroupTile(group: block),
+                    MessageTimelineBlock(:final message) =>
+                      message.event == null
+                          ? MessageBubble(message: message)
+                          : Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: ToolEventTile(event: message.event!),
+                            ),
+                  },
                 ),
                 if (controller.sending)
                   const Padding(
@@ -482,10 +527,38 @@ class _ChatPaneState extends State<ChatPane> {
               maxLines: 6,
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
-                hintText: 'Message Hermes…',
-                suffixIcon: IconButton(
-                  onPressed: controller.sending ? null : _send,
-                  icon: const Icon(Icons.arrow_upward_rounded),
+                hintText: _recording
+                    ? 'Recording… tap stop when finished'
+                    : controller.transcribing
+                    ? 'Transcribing voice message…'
+                    : 'Message Hermes…',
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: _recording
+                          ? 'Stop and send recording'
+                          : 'Record voice message',
+                      onPressed: controller.sending || controller.transcribing
+                          ? null
+                          : _toggleRecording,
+                      color: _recording ? Colors.redAccent : null,
+                      icon: Icon(
+                        _recording
+                            ? Icons.stop_circle_outlined
+                            : Icons.mic_none_rounded,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed:
+                          controller.sending ||
+                              controller.transcribing ||
+                              _recording
+                          ? null
+                          : _send,
+                      icon: const Icon(Icons.arrow_upward_rounded),
+                    ),
+                  ],
                 ),
               ),
               onSubmitted: (_) => _send(),
@@ -496,7 +569,57 @@ class _ChatPaneState extends State<ChatPane> {
     );
   }
 
+  Future<void> _toggleRecording() async {
+    try {
+      if (_recording) {
+        final path = await _recorder.stop();
+        if (mounted) setState(() => _recording = false);
+        if (path == null) return;
+        try {
+          await widget.controller.sendVoice(path);
+        } finally {
+          final file = File(path);
+          if (await file.exists()) await file.delete();
+        }
+        return;
+      }
+
+      if (!await _recorder.hasPermission()) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Microphone permission is required.')),
+          );
+        }
+        return;
+      }
+      final directory = await getTemporaryDirectory();
+      final path =
+          '${directory.path}/hermes-voice-${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: path,
+      );
+      if (mounted) setState(() => _recording = true);
+    } catch (exception) {
+      if (mounted) {
+        setState(() => _recording = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Voice recording failed: $exception')),
+        );
+      }
+    }
+  }
+
   void _send() {
+    if (_recording ||
+        widget.controller.sending ||
+        widget.controller.transcribing) {
+      return;
+    }
     final text = _input.text;
     if (text.trim().isEmpty) return;
     _input.clear();

@@ -12,6 +12,7 @@ class ChatController extends ChangeNotifier {
   HermesSession? selected;
   bool loading = false;
   bool sending = false;
+  bool transcribing = false;
   String? error;
 
   Future<void> loadSessions() async {
@@ -53,6 +54,23 @@ class ChatController extends ChangeNotifier {
       error = exception.toString();
     } finally {
       loading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> sendVoice(String path) async {
+    if (sending || transcribing) return;
+    transcribing = true;
+    error = null;
+    notifyListeners();
+    try {
+      final transcript = await api.transcribeAudio(path);
+      transcribing = false;
+      notifyListeners();
+      await send(transcript);
+    } catch (exception) {
+      transcribing = false;
+      error = exception.toString();
       notifyListeners();
     }
   }
