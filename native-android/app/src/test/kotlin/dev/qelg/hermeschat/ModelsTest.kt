@@ -1,9 +1,11 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ChatItem
+import dev.qelg.hermeschat.data.ConnectionConfig
 import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
+import dev.qelg.hermeschat.data.upsertTool
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

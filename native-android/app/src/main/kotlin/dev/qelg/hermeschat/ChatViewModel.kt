@@ -32,6 +32,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     init { credentials.load()?.let(::connect) }
 
     fun connect(config: ConnectionConfig) {
+        if (!config.isAllowedEndpoint()) {
+            _state.update { it.copy(error = ErrorMessage("Use HTTPS, or HTTP only for localhost, private LAN, or Tailscale endpoints.")) }
+            return
+        }
         credentials.save(config)
         client?.close()
         val next = HermesClient(config, viewModelScope)
@@ -144,7 +148,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 val name = listOf("name", "tool", "tool_name").firstNotNullOfOrNull { event.payload[it]?.jsonPrimitive?.contentOrNull } ?: "tool"
                 val id = listOf("tool_call_id", "tool_id", "call_id", "id").firstNotNullOfOrNull { event.payload[it]?.jsonPrimitive?.contentOrNull }
                 val state = if (event.type == "tool.start") "started" else "completed"
-                _state.update { it.copy(items = it.items + ChatItem.Tool(id, name, state, JsonObject(event.payload).toString(), event.payload["duration_ms"]?.jsonPrimitive?.longOrNull)) }
+                val tool = ChatItem.Tool(id, name, state, JsonObject(event.payload).toString(), event.payload["duration_ms"]?.jsonPrimitive?.longOrNull)
+                _state.update { it.copy(items = upsertTool(it.items, tool)) }
             }
             "approval.request" -> _state.update { it.copy(approval = ApprovalRequest(current.orEmpty(), event.payload["command"]?.jsonPrimitive?.contentOrNull.orEmpty(), event.payload["description"]?.jsonPrimitive?.contentOrNull.orEmpty(), event.payload["allow_permanent"]?.jsonPrimitive?.booleanOrNull == true)) }
             "connection.lost" -> _state.update { it.copy(connecting = true, error = ErrorMessage("Connection lost; reconnecting…")) }
