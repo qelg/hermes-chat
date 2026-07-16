@@ -1,6 +1,8 @@
 # Hermes Chat
 
-A focused Flutter client for Hermes Agent on Android and Linux.
+A focused Flutter client for Hermes Agent on Android and Linux, with a native Kotlin/Jetpack Compose Android successor under active parity validation.
+
+The native migration architecture and retirement gates are documented in [`docs/native-android-migration.md`](docs/native-android-migration.md). Flutter remains the stable release until the explicit real-device parity gates pass.
 
 ## Download
 
