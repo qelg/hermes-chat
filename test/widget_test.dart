@@ -8,6 +8,39 @@ import 'package:hermes_chat/src/models.dart';
 import 'package:hermes_chat/src/widgets/tool_event_tile.dart';
 
 void main() {
+  test('tool icons represent common families with a stable fallback', () {
+    expect(toolIconForName('terminal'), Icons.terminal_rounded);
+    expect(toolIconForName('functions.process'), Icons.terminal_rounded);
+    expect(toolIconForName('read_file'), Icons.description_outlined);
+    expect(toolIconForName('write_file'), Icons.edit_note_rounded);
+    expect(toolIconForName('search_files'), Icons.folder_open_outlined);
+    expect(toolIconForName('web_search'), Icons.public_rounded);
+    expect(toolIconForName('github_pr_workflow'), Icons.account_tree_outlined);
+    expect(toolIconForName('image_generate'), Icons.image_outlined);
+    expect(toolIconForName('text_to_speech'), Icons.audio_file_outlined);
+    expect(toolIconForName('cronjob'), Icons.calendar_month_outlined);
+    expect(toolIconForName('brand_new_tool'), Icons.build_outlined);
+  });
+
+  testWidgets('tool tile uses its tool identifier for the leading icon', (
+    tester,
+  ) async {
+    final event = ChatEvent.tool(
+      type: 'tool.started',
+      payload: {'tool_name': 'search_files'},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ToolEventTile(event: event)),
+      ),
+    );
+
+    expect(find.byIcon(Icons.folder_open_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.terminal_rounded), findsNothing);
+    expect(find.textContaining('search_files'), findsOneWidget);
+  });
+
   testWidgets('tool details stay collapsed until tapped', (tester) async {
     final event = ChatEvent.tool(
       type: 'tool.completed',
