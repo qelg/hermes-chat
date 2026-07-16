@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -62,7 +65,42 @@ jobs:
             > android/key.properties
       - run: flutter pub get
       - run: flutter build apk --release
+      - name: Prepare stable APK filename
+        run: cp build/app/outputs/flutter-apk/app-release.apk hermes-chat-latest.apk
       - uses: actions/upload-artifact@v4
         with:
           name: hermes-chat-android
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: hermes-chat-latest.apk
+
+  publish-android:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: android
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hermes-chat-android
+      - name: Publish latest APK at the stable download URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Automated signed Android build from commit ${GITHUB_SHA}."
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload latest hermes-chat-latest.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            gh release edit latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Latest Hermes Chat APK" \
+              --notes "$notes" \
+              --latest
+          else
+            gh release create latest hermes-chat-latest.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Latest Hermes Chat APK" \
+              --notes "$notes" \
+              --latest
+          fi

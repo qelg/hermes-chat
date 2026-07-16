@@ -2,6 +2,12 @@
 
 A focused Flutter client for Hermes Agent on Android and Linux.
 
+## Download
+
+**[Download the newest signed Android APK](https://github.com/qelg/hermes-chat/releases/download/latest/hermes-chat-latest.apk)**
+
+This stable link is updated automatically after every successful CI build on `main`.
+
 The app connects to the same authenticated `hermes serve` backend as Hermes Desktop. Chat, session history, tool activity, approvals, interruption, and voice transcription therefore use Hermes' native WebSocket/JSON-RPC and HTTP surfaces rather than the OpenAI-compatible API Server.
 
 ## MVP features
