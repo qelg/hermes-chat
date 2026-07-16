@@ -108,6 +108,44 @@ void main() {
     },
   );
 
+  test(
+    'a queued refresh cannot move to another session and erase its live turn',
+    () async {
+      final api = _QueuedRefreshSessionSwitchApi();
+      final controller = ChatController(api)
+        ..selected = const HermesSession(id: 'first', title: 'First')
+        ..messages = const [
+          ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+        ];
+
+      final firstRefresh = controller.refreshHistory();
+      await api.firstRefreshStarted.future;
+      await controller.send('Question for first');
+      await controller.select(
+        const HermesSession(id: 'second', title: 'Second'),
+      );
+
+      final secondSend = controller.send('Question for second');
+      await api.secondStreamStarted.future;
+      api.releaseFirstRefresh.complete(const [
+        ChatMessage(role: 'assistant', text: 'First history', persistedId: '1'),
+      ]);
+      await firstRefresh;
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(api.secondHistoryCalls, 1);
+      expect(controller.messages.map((message) => message.text), [
+        'Second history',
+        'Question for second',
+      ]);
+
+      api.releaseSecondStream.complete();
+      await secondSend;
+      controller.dispose();
+    },
+  );
+
   test('select ignores stale history from a previous session', () async {
     final api = _DeferredHistoryApi();
     final controller = ChatController(api);
@@ -815,6 +853,59 @@ class _SessionSwitchDuringSendApi extends HermesApi {
       ChatMessage(role: 'assistant', text: 'Second history', persistedId: '2'),
     ],
   };
+
+  @override
+  Future<List<HermesSession>> listSessions() async => const [
+    HermesSession(id: 'first', title: 'First'),
+    HermesSession(id: 'second', title: 'Second'),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _QueuedRefreshSessionSwitchApi extends HermesApi {
+  _QueuedRefreshSessionSwitchApi()
+    : super(
+        const ConnectionConfig(baseUrl: 'https://example.test', token: 'x'),
+      );
+
+  final firstRefreshStarted = Completer<void>();
+  final releaseFirstRefresh = Completer<List<ChatMessage>>();
+  final secondStreamStarted = Completer<void>();
+  final releaseSecondStream = Completer<void>();
+  var secondHistoryCalls = 0;
+
+  @override
+  Stream<StreamUpdate> chat(String sessionId, String input) async* {
+    if (sessionId == 'first') {
+      yield const CompletedText('First reply');
+      return;
+    }
+    secondStreamStarted.complete();
+    await releaseSecondStream.future;
+  }
+
+  @override
+  Future<List<ChatMessage>> messages(String sessionId) async {
+    if (sessionId == 'first') {
+      if (!firstRefreshStarted.isCompleted) firstRefreshStarted.complete();
+      return releaseFirstRefresh.future;
+    }
+    secondHistoryCalls += 1;
+    if (secondHistoryCalls == 1) {
+      return const [
+        ChatMessage(
+          role: 'assistant',
+          text: 'Second history',
+          persistedId: '2',
+        ),
+      ];
+    }
+    return const [
+      ChatMessage(role: 'assistant', text: 'Second old', persistedId: '2'),
+    ];
+  }
 
   @override
   Future<List<HermesSession>> listSessions() async => const [

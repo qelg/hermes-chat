@@ -27,7 +27,8 @@ class ChatController extends ChangeNotifier {
   final Duration refreshInterval;
   Timer? _refreshTimer;
   bool _refreshing = false;
-  bool _refreshQueued = false;
+  String? _queuedRefreshSessionId;
+  int? _queuedRefreshRevision;
   bool _disposed = false;
   int _timelineRevision = 0;
   int _sendGeneration = 0;
@@ -139,7 +140,10 @@ class ChatController extends ChangeNotifier {
     final session = selected;
     if (_disposed || session == null || (sending && !force)) return;
     if (_refreshing) {
-      if (force) _refreshQueued = true;
+      if (force) {
+        _queuedRefreshSessionId = session.id;
+        _queuedRefreshRevision = _timelineRevision;
+      }
       return;
     }
     final revision = _timelineRevision;
@@ -158,8 +162,14 @@ class ChatController extends ChangeNotifier {
       // Periodic reconciliation is best-effort and retries on the next tick.
     } finally {
       _refreshing = false;
-      if (_refreshQueued && !_disposed) {
-        _refreshQueued = false;
+      final queuedSessionId = _queuedRefreshSessionId;
+      final queuedRevision = _queuedRefreshRevision;
+      _queuedRefreshSessionId = null;
+      _queuedRefreshRevision = null;
+      if (!_disposed &&
+          queuedSessionId != null &&
+          selected?.id == queuedSessionId &&
+          _timelineRevision == queuedRevision) {
         unawaited(refreshHistory(force: true));
       }
     }
