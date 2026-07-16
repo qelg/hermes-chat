@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package dev.qelg.hermeschat
 
 import android.Manifest
@@ -148,7 +150,7 @@ private fun TimelineItem(item: ChatItem) {
             }
         }
         is ChatItem.Tool -> ToolCard(item)
-        is ChatItem.ToolGroup -> { var expanded by rememberSaveable { mutableStateOf(false) }; Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) { Column(Modifier.padding(12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Build, null); Spacer(Modifier.width(8.dp)); Text("${item.tools.size} tool calls", Modifier.weight(1f)); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) }; if (expanded) item.tools.forEach(::ToolCard) } } }
+        is ChatItem.ToolGroup -> { var expanded by rememberSaveable { mutableStateOf(false) }; Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) { Column(Modifier.padding(12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Build, null); Spacer(Modifier.width(8.dp)); Text("${item.tools.size} tool calls", Modifier.weight(1f)); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) }; if (expanded) item.tools.forEach { ToolCard(it) } } } }
         is ChatItem.Status -> Text(item.text, style = MaterialTheme.typography.bodySmall)
     }
 }
