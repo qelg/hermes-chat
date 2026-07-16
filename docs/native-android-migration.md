@@ -30,7 +30,7 @@ Audio transcription uses `POST /api/audio/transcribe` with `{ "data_url": "data:
 ## Build and test
 
 ```bash
-gradle -p native-android testDebugUnitTest assembleDebug
+./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
 
 CI publishes `hermes-chat-native-preview.apk` as both a workflow artifact and a preview asset on the existing `latest` release while continuing to publish the Flutter APK as the stable artifact.

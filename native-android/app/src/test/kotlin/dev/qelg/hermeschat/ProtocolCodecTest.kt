@@ -10,7 +10,8 @@ import org.junit.Test
 class ProtocolCodecTest {
     @Test
     fun requestUsesHermesDesktopJsonRpcEnvelope() {
-        val frame = ProtocolCodec.request("mobile-7", "session.list", mapOf("limit" to JsonPrimitive(200)))
+        val frame =
+            ProtocolCodec.request("mobile-7", "session.list", mapOf("limit" to JsonPrimitive(200)))
         assertEquals("2.0", frame["jsonrpc"]?.jsonPrimitive?.content)
         assertEquals("mobile-7", frame["id"]?.jsonPrimitive?.content)
         assertEquals("session.list", frame["method"]?.jsonPrimitive?.content)
@@ -19,8 +20,14 @@ class ProtocolCodecTest {
 
     @Test
     fun eventFramePreservesSessionAndPayload() {
-        val event = ProtocolCodec.event("""{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"runtime-1","payload":{"text":"Hi"}}}""")
-        assertEquals(GatewayEvent("message.delta", "runtime-1", mapOf("text" to JsonPrimitive("Hi"))), event)
+        val event =
+            ProtocolCodec.event(
+                """{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"runtime-1","payload":{"text":"Hi"}}}"""
+            )
+        assertEquals(
+            GatewayEvent("message.delta", "runtime-1", mapOf("text" to JsonPrimitive("Hi"))),
+            event,
+        )
     }
 
     @Test
