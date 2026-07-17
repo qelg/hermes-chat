@@ -375,9 +375,7 @@ private fun ChatPane(
                 { input = it },
                 Modifier.weight(1f),
                 placeholder = {
-                    Text(
-                        state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes"
-                    )
+                    Text(state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes")
                 },
                 maxLines = 6,
             )
@@ -385,8 +383,7 @@ private fun ChatPane(
                 {
                     val text = input
                     input = ""
-                    if (state.clarify != null) vm.answerClarify(text)
-                    else vm.send(text)
+                    if (state.clarify != null) vm.answerClarify(text) else vm.send(text)
                 },
                 enabled = input.isNotBlank() && !state.connecting,
             ) {
