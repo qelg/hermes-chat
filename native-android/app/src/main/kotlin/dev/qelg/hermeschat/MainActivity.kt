@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.text.HtmlCompat
@@ -687,14 +688,31 @@ private fun toolIcon(name: String) =
         else -> Icons.Default.Terminal
     }
 
+private sealed class MarkdownBlock {
+    data class Html(val content: String) : MarkdownBlock()
+    data class Table(val rows: List<List<String>>) : MarkdownBlock()
+}
+
 @Composable
 private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
-    val html =
+    val blocks =
         remember(markdown) {
             val parser = Parser.builder().extensions(listOf(TablesExtension.create())).build()
             val raw = HtmlRenderer.builder().escapeHtml(true).build().render(parser.parse(markdown))
-            replaceTablesWithText(raw)
+            extractTableBlocks(raw)
         }
+    Column(modifier) {
+        blocks.forEach { block ->
+            when (block) {
+                is MarkdownBlock.Html -> HtmlBlock(block.content)
+                is MarkdownBlock.Table -> TableBlock(block.rows)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HtmlBlock(html: String) {
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     AndroidView(
         factory = { context ->
@@ -718,13 +736,68 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                 )
             )
         },
-        modifier = modifier,
     )
 }
 
-private fun replaceTablesWithText(html: String): String {
+@Composable
+private fun TableBlock(rows: List<List<String>>) {
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
+    val headerBg = MaterialTheme.colorScheme.primaryContainer
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier =
+            Modifier.fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .border(1.dp, borderColor, RoundedCornerShape(8.dp)),
+    ) {
+        rows.forEachIndexed { rowIndex, row ->
+            Row(
+                modifier =
+                    Modifier.fillMaxWidth()
+                        .then(
+                            if (rowIndex == 0)
+                                Modifier.background(
+                                    headerBg,
+                                    if (rows.size == 1) RoundedCornerShape(8.dp)
+                                    else
+                                        RoundedCornerShape(
+                                            topStart = if (rowIndex == 0) 8.dp else 0.dp,
+                                            topEnd = if (rowIndex == 0) 8.dp else 0.dp,
+                                            bottomStart = if (rowIndex == rows.size - 1) 8.dp else 0.dp,
+                                            bottomEnd = if (rowIndex == rows.size - 1) 8.dp else 0.dp,
+                                        ),
+                                )
+                            else Modifier,
+                        )
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                row.forEach { cell ->
+                    Text(
+                        text = cell,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal,
+                        color = onSurface,
+                    )
+                }
+            }
+            if (rowIndex < rows.size - 1) {
+                HorizontalDivider(thickness = 0.5.dp, color = borderColor)
+            }
+        }
+    }
+}
+
+internal fun extractTableBlocks(html: String): List<MarkdownBlock> {
     val tablePattern = Regex("<table>(.*?)</table>", RegexOption.DOT_MATCHES_ALL)
-    return tablePattern.replace(html) { match ->
+    val blocks = mutableListOf<MarkdownBlock>()
+    var lastEnd = 0
+
+    tablePattern.findAll(html).forEach { match ->
+        if (match.range.first > lastEnd) {
+            val before = html.substring(lastEnd, match.range.first)
+            if (before.isNotBlank()) blocks.add(MarkdownBlock.Html(before))
+        }
         val body = match.groupValues[1]
         val rows =
             Regex("<tr>(.*?)</tr>", RegexOption.DOT_MATCHES_ALL)
@@ -735,19 +808,25 @@ private fun replaceTablesWithText(html: String): String {
                         .map { it.groupValues[1].replace(Regex("<[^>]+>"), "").trim() }
                         .toList()
                 }
+                .filter { it.isNotEmpty() }
                 .toList()
-        if (rows.isEmpty() || rows.all { it.isEmpty() }) return@replace ""
-        val colCount = rows.maxOf { it.size }
-        val colWidths =
-            (0 until colCount).map { col -> rows.maxOf { row -> row.getOrElse(col) { "" }.length } }
-        val lines =
-            rows.map { row ->
-                (0 until colCount).joinToString(" | ") { col ->
-                    row.getOrElse(col) { "" }.padEnd(colWidths[col])
-                }
-            }
-        "<pre>" + lines.joinToString("\n") + "</pre>"
+        if (rows.isNotEmpty()) {
+            blocks.add(MarkdownBlock.Table(rows))
+        } else {
+            blocks.add(
+                MarkdownBlock.Html(match.value.replace(Regex("<[^>]+>"), " ").trim()),
+            )
+        }
+        lastEnd = match.range.last + 1
     }
+
+    if (lastEnd < html.length) {
+        val after = html.substring(lastEnd)
+        if (after.isNotBlank()) blocks.add(MarkdownBlock.Html(after))
+    }
+
+    if (blocks.isEmpty()) blocks.add(MarkdownBlock.Html(html))
+    return blocks
 }
 
 @Composable
