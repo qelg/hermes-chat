@@ -182,7 +182,8 @@ class UpdateManager(private val app: Application) {
             } == true
 
         if (releaseVersionCode == null || !hasApk) return null to null
-        val isNewer = releaseVersionCode > currentVersionCode
-        return if (isNewer) releaseVersionName to releaseVersionCode else null to null
+        // Always return the release versionCode so checkForUpdate() can show
+        // "Up to date" when the installed version matches the latest release.
+        return releaseVersionName to releaseVersionCode
     }
 }
