@@ -300,8 +300,20 @@ private fun ChatPane(
                 }
         }
         HorizontalDivider()
+        if (state.transcribing) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Uploading and transcribing voice…")
+            }
+        }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-            VoiceButton(vm) { input = if (input.isBlank()) it else "$input\n$it" }
+            VoiceButton(vm, enabled = !state.transcribing) {
+                input = if (input.isBlank()) it else "$input\n$it"
+            }
             OutlinedTextField(
                 input,
                 { input = it },
@@ -439,7 +451,7 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun VoiceButton(vm: ChatViewModel, onText: (String) -> Unit) {
+private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
@@ -478,32 +490,35 @@ private fun VoiceButton(vm: ChatViewModel, onText: (String) -> Unit) {
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
             if (it) start()
         }
-    IconButton({
-        val active = recorder
-        if (active == null) permission.launch(Manifest.permission.RECORD_AUDIO)
-        else {
-            recorder = null
-            val audio = file
-            file = null
-            val stopped = runCatching { active.stop() }.isSuccess
-            runCatching { active.release() }
-            if (!stopped || audio == null || audio.length() == 0L) {
-                audio?.delete()
-                vm.reportError(
-                    IllegalStateException("Voice recording failed; nothing was uploaded")
-                )
-            } else {
-                val bytes =
-                    runCatching { audio.readBytes() }
-                        .getOrElse {
-                            audio.delete()
-                            vm.reportError(it)
-                            return@IconButton
-                        }
-                vm.transcribe(bytes, "audio/mp4", { it.onSuccess(onText) }, { audio.delete() })
+    IconButton(
+        onClick = {
+            val active = recorder
+            if (active == null) permission.launch(Manifest.permission.RECORD_AUDIO)
+            else {
+                recorder = null
+                val audio = file
+                file = null
+                val stopped = runCatching { active.stop() }.isSuccess
+                runCatching { active.release() }
+                if (!stopped || audio == null || audio.length() == 0L) {
+                    audio?.delete()
+                    vm.reportError(
+                        IllegalStateException("Voice recording failed; nothing was uploaded")
+                    )
+                } else {
+                    val bytes =
+                        runCatching { audio.readBytes() }
+                            .getOrElse {
+                                audio.delete()
+                                vm.reportError(it)
+                                return@IconButton
+                            }
+                    vm.transcribe(bytes, "audio/mp4", { it.onSuccess(onText) }, { audio.delete() })
+                }
             }
-        }
-    }) {
+        },
+        enabled = enabled,
+    ) {
         Icon(
             if (recorder == null) Icons.Default.Mic else Icons.Default.Stop,
             if (recorder == null) "Record voice" else "Stop recording",
