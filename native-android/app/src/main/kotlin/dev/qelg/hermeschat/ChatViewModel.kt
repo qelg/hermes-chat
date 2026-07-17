@@ -12,6 +12,18 @@ import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
 
+internal suspend fun <T> runVoiceTranscription(
+    setTranscribing: (Boolean) -> Unit,
+    operation: suspend () -> T,
+): Result<T> {
+    setTranscribing(true)
+    return try {
+        runCatching { operation() }
+    } finally {
+        setTranscribing(false)
+    }
+}
+
 data class ChatUiState(
     val configured: Boolean = false,
     val connecting: Boolean = false,
@@ -21,6 +33,7 @@ data class ChatUiState(
     val title: String = "Hermes Chat",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
+    val transcribing: Boolean = false,
     val approval: ApprovalRequest? = null,
     val error: ErrorMessage? = null,
 )
@@ -302,9 +315,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         cleanup: () -> Unit,
     ) =
         viewModelScope.launch {
-            val result = runCatching {
-                client?.transcribe(bytes, mimeType) ?: error("Not connected")
-            }
+            val result =
+                runVoiceTranscription(
+                    setTranscribing = { active ->
+                        _state.update { it.copy(transcribing = active) }
+                    },
+                    operation = { client?.transcribe(bytes, mimeType) ?: error("Not connected") },
+                )
             result.onFailure(::showError)
             onResult(result)
             cleanup()
