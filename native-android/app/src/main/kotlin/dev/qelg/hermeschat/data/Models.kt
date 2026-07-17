@@ -45,46 +45,184 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
 }
 
 sealed interface ChatItem {
-    data class Message(val role: String, val text: String, val id: String? = null) : ChatItem
+    data class Message(
+        val role: String,
+        val text: String,
+        val id: String? = null,
+        val timestamp: java.time.Instant? = null,
+    ) : ChatItem
 
     data class Tool(
         val id: String?,
         val name: String,
         val state: String,
-        val details: String,
+        val arguments: String? = null,
+        val result: String? = null,
+        val error: String? = null,
+        val startedAt: java.time.Instant? = null,
+        val completedAt: java.time.Instant? = null,
         val durationMs: Long? = null,
-    ) : ChatItem
+        val durationEstimated: Boolean = false,
+        val deriveDuration: Boolean = true,
+        val batchId: String? = null,
+    ) : ChatItem {
+        val final: Boolean
+            get() = state in setOf("completed", "failed", "cancelled")
 
-    data class ToolGroup(val tools: List<Tool>) : ChatItem
+        val details: String
+            get() =
+                listOfNotNull(
+                        arguments?.takeIf(String::isNotBlank)?.let { "Arguments\n$it" },
+                        result?.takeIf(String::isNotBlank)?.let { "Result\n$it" },
+                        error?.takeIf(String::isNotBlank)?.let { "Error\n$it" },
+                    )
+                    .joinToString("\n\n")
+    }
 
-    data class Status(val text: String) : ChatItem
+    data class ParallelToolGroup(val id: String, val tools: List<Tool>) : ChatItem {
+        val final: Boolean
+            get() = tools.all(Tool::final)
+    }
+
+    data class ToolGroup(val operations: List<ChatItem>) : ChatItem {
+        val callCount: Int
+            get() = operations.sumOf(::toolCallCount)
+    }
+
+    data class Status(val text: String, val timestamp: java.time.Instant? = null) : ChatItem
+}
+
+private fun toolCallCount(item: ChatItem): Int =
+    when (item) {
+        is ChatItem.Tool -> 1
+        is ChatItem.ParallelToolGroup -> item.tools.size
+        else -> 0
+    }
+
+private fun isCompletedOperation(item: ChatItem): Boolean =
+    when (item) {
+        is ChatItem.Tool -> item.final
+        is ChatItem.ParallelToolGroup -> item.final
+        else -> false
+    }
+
+fun toolCountBreakdown(operations: List<ChatItem>): Map<String, Int> {
+    val counts = linkedMapOf<String, Int>()
+    operations.forEach { operation ->
+        val tools =
+            when (operation) {
+                is ChatItem.Tool -> listOf(operation)
+                is ChatItem.ParallelToolGroup -> operation.tools
+                else -> emptyList()
+            }
+        tools.forEach { counts[it.name] = (counts[it.name] ?: 0) + 1 }
+    }
+    return counts
 }
 
 fun groupTimeline(items: List<ChatItem>, minimumGroupSize: Int = 4): List<ChatItem> {
     val result = mutableListOf<ChatItem>()
-    val tools = mutableListOf<ChatItem.Tool>()
+    val completed = mutableListOf<ChatItem>()
     fun flush() {
-        if (tools.size >= minimumGroupSize) result += ChatItem.ToolGroup(tools.toList())
-        else result += tools
-        tools.clear()
+        if (completed.sumOf(::toolCallCount) >= minimumGroupSize)
+            result += ChatItem.ToolGroup(completed.toList())
+        else result += completed
+        completed.clear()
     }
-    items.forEach {
-        if (it is ChatItem.Tool) tools += it
+    items.forEach { item ->
+        if (isCompletedOperation(item)) completed += item
         else {
             flush()
-            result += it
+            result += item
         }
     }
     flush()
     return result
 }
 
-fun upsertTool(items: List<ChatItem>, tool: ChatItem.Tool): List<ChatItem> {
-    if (tool.id == null) return items + tool
-    val index = items.indexOfLast { it is ChatItem.Tool && it.id == tool.id }
-    if (index == -1) return items + tool
-    return items.toMutableList().apply { this[index] = tool }
+private fun mergeTool(started: ChatItem.Tool, update: ChatItem.Tool): ChatItem.Tool {
+    if (started.final && !update.final) return started
+    val startedAt = started.startedAt ?: update.startedAt
+    val completedAt = update.completedAt ?: started.completedAt
+    val measured =
+        if (
+            update.deriveDuration &&
+                update.durationMs == null &&
+                startedAt != null &&
+                completedAt != null
+        )
+            java.time.Duration.between(startedAt, completedAt).toMillis().takeIf { it >= 0 }
+        else null
+    return update.copy(
+        name = update.name.takeUnless { it == "tool" } ?: started.name,
+        arguments = update.arguments ?: started.arguments,
+        result = update.result ?: started.result,
+        error = update.error ?: started.error,
+        startedAt = startedAt,
+        completedAt = completedAt,
+        durationMs = update.durationMs ?: measured ?: started.durationMs,
+        durationEstimated = update.durationEstimated || started.durationEstimated,
+        deriveDuration = update.deriveDuration,
+        batchId = update.batchId ?: started.batchId,
+    )
 }
+
+private fun compatibleParallelStart(first: ChatItem.Tool, next: ChatItem.Tool): Boolean =
+    !first.final &&
+        !next.final &&
+        (first.batchId == null || next.batchId == null || first.batchId == next.batchId)
+
+fun upsertTool(items: List<ChatItem>, tool: ChatItem.Tool): List<ChatItem> {
+    if (tool.id != null) {
+        items.forEachIndexed { index, item ->
+            when (item) {
+                is ChatItem.Tool ->
+                    if (item.id == tool.id)
+                        return items.toMutableList().apply { this[index] = mergeTool(item, tool) }
+                is ChatItem.ParallelToolGroup -> {
+                    val child = item.tools.indexOfFirst { it.id == tool.id }
+                    if (child >= 0) {
+                        val updated = item.tools.toMutableList()
+                        updated[child] = mergeTool(updated[child], tool)
+                        return items.toMutableList().apply {
+                            this[index] = item.copy(tools = updated)
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+    if (!tool.final) {
+        when (val last = items.lastOrNull()) {
+            is ChatItem.Tool ->
+                if (compatibleParallelStart(last, tool)) {
+                    val groupId =
+                        tool.batchId ?: last.batchId ?: "parallel:${last.id ?: items.size}"
+                    return items.dropLast(1) +
+                        ChatItem.ParallelToolGroup(groupId, listOf(last, tool))
+                }
+            is ChatItem.ParallelToolGroup ->
+                if (
+                    !last.final &&
+                        last.tools.lastOrNull()?.let { compatibleParallelStart(it, tool) } == true
+                )
+                    return items.dropLast(1) + last.copy(tools = last.tools + tool)
+            else -> Unit
+        }
+    }
+    return items + tool
+}
+
+fun formatClockTime(
+    timestamp: java.time.Instant,
+    zoneId: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    locale: java.util.Locale = java.util.Locale.getDefault(),
+): String =
+    java.time.format.DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT)
+        .withLocale(locale)
+        .withZone(zoneId)
+        .format(timestamp)
 
 data class ApprovalRequest(
     val sessionId: String,
