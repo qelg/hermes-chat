@@ -237,6 +237,23 @@ class HermesClient(
         }
     }
 
+    suspend fun modelOptions(sessionId: String? = null): ModelCatalog {
+        val params = mutableMapOf<String, JsonElement>("explicit_only" to JsonPrimitive(true))
+        sessionId?.takeIf(String::isNotBlank)?.let { params["session_id"] = JsonPrimitive(it) }
+        return ModelCatalog.fromJson(request("model.options", params))
+    }
+
+    suspend fun selectModel(sessionId: String, selection: ModelSelection): JsonObject =
+        request(
+            "config.set",
+            mapOf(
+                "session_id" to JsonPrimitive(sessionId),
+                "key" to JsonPrimitive("model"),
+                "value" to JsonPrimitive(modelSwitchValue(selection)),
+                "confirm_expensive_model" to JsonPrimitive(true),
+            ),
+        )
+
     suspend fun history(sessionId: String): List<JsonObject> =
         (http("GET", "/api/sessions/${sessionId.urlEncode()}/messages")["messages"] as? JsonArray)
             ?.mapNotNull { it as? JsonObject }

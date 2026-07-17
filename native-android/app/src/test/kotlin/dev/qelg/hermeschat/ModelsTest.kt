@@ -3,13 +3,18 @@ package dev.qelg.hermeschat
 import dev.qelg.hermeschat.data.ChatItem
 import dev.qelg.hermeschat.data.ConnectionConfig
 import dev.qelg.hermeschat.data.HermesSession
+import dev.qelg.hermeschat.data.ModelCatalog
+import dev.qelg.hermeschat.data.ModelSelection
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
+import dev.qelg.hermeschat.data.modelSwitchValue
 import dev.qelg.hermeschat.data.toolCountBreakdown
 import dev.qelg.hermeschat.data.upsertTool
 import java.time.Instant
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -180,6 +185,63 @@ class ModelsTest {
                 }
             )
         assertTrue(session.active)
+    }
+
+    @Test
+    fun modelCatalogDecodesConfiguredProvidersAndUnavailableModels() {
+        val payload =
+            Json.parseToJsonElement(
+                    """{
+                    "model":"gpt-5.6-sol",
+                    "provider":"openai-codex",
+                    "providers":[
+                      {"slug":"openai-codex","name":"OpenAI Codex","authenticated":true,
+                       "models":["gpt-5.6-sol","gpt-5.5"]},
+                      {"slug":"nous","name":"Nous Portal","authenticated":true,
+                       "models":["Hermes-4.3-36B"],"unavailable_models":["Hermes-4.3-36B"]},
+                      {"slug":"anthropic","name":"Anthropic","authenticated":false,
+                       "models":["claude-sonnet-4.6"]}
+                    ]
+                }"""
+                )
+                .jsonObject
+
+        val catalog = ModelCatalog.fromJson(payload)
+
+        assertEquals(ModelSelection("openai-codex", "gpt-5.6-sol"), catalog.selected)
+        assertEquals(listOf("openai-codex", "nous"), catalog.providers.map { it.slug })
+        assertTrue(catalog.providers[1].models.single().unavailable)
+    }
+
+    @Test
+    fun modelCatalogFiltersModelsByProviderNameAndModelId() {
+        val catalog =
+            ModelCatalog(
+                providers =
+                    listOf(
+                        dev.qelg.hermeschat.data.ModelProvider(
+                            "anthropic",
+                            "Anthropic",
+                            listOf(dev.qelg.hermeschat.data.ModelOption("claude-sonnet-4.6")),
+                        ),
+                        dev.qelg.hermeschat.data.ModelProvider(
+                            "openai-codex",
+                            "OpenAI Codex",
+                            listOf(dev.qelg.hermeschat.data.ModelOption("gpt-5.6-sol")),
+                        ),
+                    )
+            )
+
+        assertEquals(listOf("anthropic"), catalog.filtered("ANTHROPIC").map { it.slug })
+        assertEquals(listOf("openai-codex"), catalog.filtered("5.6-sol").map { it.slug })
+    }
+
+    @Test
+    fun modelSwitchIsExplicitlySessionScoped() {
+        assertEquals(
+            "gpt-5.6-sol --provider openai-codex --session",
+            modelSwitchValue(ModelSelection("openai-codex", "gpt-5.6-sol")),
+        )
     }
 
     @Test
