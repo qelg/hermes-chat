@@ -151,6 +151,18 @@ class TimelineStateTest {
     }
 
     @Test
+    fun historyRowParsesNumericTimestampAsInstant() {
+        // Server stores timestamps as Unix floats (e.g. 1752757200.123)
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":"m1","role":"assistant","content":"Hi","timestamp":1752757200.0}"""
+                )
+                .jsonObject
+        val message = messagesFromHistoryRow(row).single() as ChatItem.Message
+        assertEquals(Instant.ofEpochSecond(1752757200), message.timestamp)
+    }
+
+    @Test
     fun clarifyArgumentsParseQuestionAndChoices() {
         val request =
             parseClarifyArguments("""{"question":"Which target?","choices":["staging","prod"]}""")
