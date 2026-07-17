@@ -381,8 +381,26 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun answerClarify(text: String) {
         val clean = text.trim()
         if (clean.isEmpty()) return
+        val requestId = _state.value.clarify?.requestId ?: return
         _state.update { it.copy(clarify = null) }
-        send(clean)
+        viewModelScope.launch {
+            runCatching {
+                    client?.request(
+                        "clarify.respond",
+                        mapOf(
+                            "request_id" to JsonPrimitive(requestId),
+                            "answer" to JsonPrimitive(clean),
+                        ),
+                    )
+                }
+                .onFailure {
+                    // If the response failed (e.g. expired prompt), recover by
+                    // sending the answer as a regular message so the user's text
+                    // isn't silently lost.
+                    _state.update { it.copy(clarify = null) }
+                    send(clean)
+                }
+        }
     }
 
     fun transcribe(
@@ -429,6 +447,19 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     }
                 }
             }
+            "clarify.request" -> {
+                val parsed = parseClarifyRequest(event.payload)
+                if (parsed != null) _state.update { it.copy(clarify = parsed) }
+            }
+            "clarify.expire" -> {
+                // Server timed out or cancelled the prompt — dismiss the dialog
+                val requestId = event.payload["request_id"]?.jsonPrimitive?.contentOrNull
+                _state.update { current ->
+                    if (requestId == null || current.clarify?.requestId == requestId)
+                        current.copy(clarify = null)
+                    else current
+                }
+            }
             "message.delta" ->
                 appendDelta(event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "message.complete" -> {
@@ -455,19 +486,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     listOf("name", "tool", "tool_name").firstNotNullOfOrNull {
                         event.payload[it]?.jsonPrimitive?.contentOrNull
                     } ?: "tool"
-                // Clarify is an interactive prompt — show it as a dialog, not a tool card
-                if (name == "clarify" && event.type == "tool.start") {
-                    val arguments =
-                        listOf("arguments", "args", "input", "request").firstNotNullOfOrNull {
-                            event.payload[it]?.displayString()
-                        }
-                    val parsed = parseClarifyArguments(arguments)
-                    _state.update { it.copy(clarify = parsed) }
-                    return
-                }
+                // Clarify is an interactive prompt — the server sends a dedicated
+                // clarify.request event with question + choices.  Do NOT rely on
+                // tool.start here — its payload only carries a context label,
+                // not the parseable arguments the dialog needs.
                 if (name == "clarify") {
-                    // tool.complete / tool.failed for clarify — dismiss the dialog
-                    _state.update { it.copy(clarify = null) }
+                    // tool.start / tool.complete / tool.failed for clarify —
+                    // handled via clarify.request; just suppress the tool card
                     return
                 }
                 val id =
@@ -776,15 +801,13 @@ private fun JsonObject.instant(): Instant? = (this as Map<String, JsonElement>).
 private fun JsonElement.displayString(): String =
     (this as? JsonPrimitive)?.contentOrNull ?: toString()
 
-internal fun parseClarifyArguments(arguments: String?): ClarifyRequest? {
-    if (arguments.isNullOrBlank()) return null
-    val obj =
-        runCatching { Json.parseToJsonElement(arguments).jsonObject }.getOrNull() ?: return null
-    val question = obj["question"]?.jsonPrimitive?.contentOrNull ?: return null
+internal fun parseClarifyRequest(payload: Map<String, JsonElement>): ClarifyRequest? {
+    val requestId = payload["request_id"]?.jsonPrimitive?.contentOrNull ?: return null
+    val question = payload["question"]?.jsonPrimitive?.contentOrNull ?: return null
     val choices =
-        (obj["choices"] as? JsonArray)
-            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        (payload["choices"] as? JsonArray)
+            ?.mapNotNull { it.jsonPrimitive?.contentOrNull }
             .orEmpty()
             .take(4)
-    return ClarifyRequest(question, choices)
+    return ClarifyRequest(requestId, question, choices)
 }
