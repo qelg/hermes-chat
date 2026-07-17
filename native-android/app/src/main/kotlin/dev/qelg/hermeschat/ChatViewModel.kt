@@ -227,6 +227,34 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             }
     }
 
+    /**
+     * Reload the full message history from the server and merge it with live
+     * items. This is the same code path used by [select] on initial load, so
+     * live updates and initial load stay consistent.
+     *
+     * Motivation: the incremental live-event pipeline (message.delta,
+     * tool.start/complete, clarify.request, etc.) can miss or drop state when
+     * the user enters a chat mid-turn or reconnects after a transient
+     * disconnect. Replacing the items with the server-authoritative history
+     * after each completed assistant turn avoids stale/duplicated items and
+     * clears ghost clarify/tool cards without needing special-case cleanup.
+     */
+    private fun reloadHistory() {
+        val api = client ?: return
+        val storedId = state.value.selectedId ?: return
+        val version = selectionVersion
+        viewModelScope.launch {
+            runCatching {
+                    val history = messagesFromHistoryRows(api.history(storedId))
+                    if (selectionVersion != version || client !== api) return@runCatching
+                    _state.update {
+                        it.copy(items = mergeHistoryAndLive(history, it.items))
+                    }
+                }
+                .onFailure { /* silent — best-effort refresh */ }
+        }
+    }
+
     fun createSession() =
         viewModelScope.launch {
             val api = client ?: return@launch
@@ -493,6 +521,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     )
                 }
                 scheduleRefresh()
+                reloadHistory()
             }
             "tool.start",
             "tool.complete",
