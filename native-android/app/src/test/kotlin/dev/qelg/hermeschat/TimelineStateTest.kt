@@ -1,7 +1,6 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ChatItem
-import dev.qelg.hermeschat.data.ClarifyRequest
 import dev.qelg.hermeschat.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -186,9 +185,7 @@ class TimelineStateTest {
     @Test
     fun clarifyArgumentsTruncatesExcessChoices() {
         val request =
-            parseClarifyArguments(
-                """{"question":"Pick","choices":["a","b","c","d","e","f"]}"""
-            )
+            parseClarifyArguments("""{"question":"Pick","choices":["a","b","c","d","e","f"]}""")
         assertNotNull(request)
         assertEquals(listOf("a", "b", "c", "d"), request!!.choices)
     }
