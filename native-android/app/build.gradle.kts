@@ -27,6 +27,9 @@ if (keyPropertiesFile.exists()) {
     FileInputStream(keyPropertiesFile).use(keyProperties::load)
 }
 
+val resolvedVersionCode: Int = (project.findProperty("versionCode") as? String)?.toInt() ?: 1
+val resolvedVersionName: String = project.findProperty("versionName") as? String ?: "0.1.0-dev"
+
 android {
     namespace = "dev.qelg.hermeschat"
     compileSdk = 35
@@ -35,8 +38,8 @@ android {
         applicationId = "dev.qelg.hermes_chat.native"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-native-preview"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {

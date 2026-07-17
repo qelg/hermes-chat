@@ -13,13 +13,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - uses: gradle/actions/wrapper-validation@v4
-      - run: ./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
+      - name: Compute version
+        run: |
+          VERSION_CODE=$(git rev-list --count HEAD)
+          # Get the most recent tag matching v* (skip the rolling "latest" tag)
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v '^latest$' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.1.0"
+            COMMITS_SINCE="$VERSION_CODE"
+          else
+            COMMITS_SINCE=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || echo "0")
+          fi
+          TAG_VERSION=$(echo "$LATEST_TAG" | sed 's/^v//')
+          if [ "$COMMITS_SINCE" -gt 0 ]; then
+            VERSION_NAME="${TAG_VERSION}.dev${COMMITS_SINCE}"
+          else
+            VERSION_NAME="$TAG_VERSION"
+          fi
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "versionCode=$VERSION_CODE  versionName=$VERSION_NAME"
+      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - uses: actions/upload-artifact@v4
         with:
           name: hermes-chat-native-preview
@@ -30,11 +52,33 @@ jobs:
     needs: native-android
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Compute version
+        run: |
+          VERSION_CODE=$(git rev-list --count HEAD)
+          # Get the most recent tag matching v* (skip the rolling "latest" tag)
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v '^latest$' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.1.0"
+            COMMITS_SINCE="$VERSION_CODE"
+          else
+            COMMITS_SINCE=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || echo "0")
+          fi
+          TAG_VERSION=$(echo "$LATEST_TAG" | sed 's/^v//')
+          if [ "$COMMITS_SINCE" -gt 0 ]; then
+            VERSION_NAME="${TAG_VERSION}.dev${COMMITS_SINCE}"
+          else
+            VERSION_NAME="$TAG_VERSION"
+          fi
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "versionCode=$VERSION_CODE  versionName=$VERSION_NAME"
       - name: Configure Android release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -50,7 +94,7 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=../upload-keystore.jks\n' \
             "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_PASSWORD" "$ANDROID_KEY_ALIAS" \
             > native-android/key.properties
-      - run: ./native-android/gradlew -p native-android assembleRelease
+      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" assembleRelease
       - name: Prepare stable APK filename
         run: cp native-android/app/build/outputs/apk/release/app-release.apk hermes-chat-latest.apk
       - uses: actions/upload-artifact@v4
@@ -65,6 +109,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: hermes-chat-android
@@ -72,13 +119,32 @@ jobs:
         with:
           name: hermes-chat-native-preview
           path: native-preview
+      - name: Compute version for release notes
+        run: |
+          VERSION_CODE=$(git rev-list --count HEAD)
+          # Get the most recent tag matching v* (skip the rolling "latest" tag)
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v '^latest$' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.1.0"
+            COMMITS_SINCE="$VERSION_CODE"
+          else
+            COMMITS_SINCE=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || echo "0")
+          fi
+          TAG_VERSION=$(echo "$LATEST_TAG" | sed 's/^v//')
+          if [ "$COMMITS_SINCE" -gt 0 ]; then
+            VERSION_NAME="${TAG_VERSION}.dev${COMMITS_SINCE}"
+          else
+            VERSION_NAME="$TAG_VERSION"
+          fi
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
       - name: Prepare native preview APK
         run: cp native-preview/app-debug.apk hermes-chat-native-preview.apk
       - name: Publish latest APKs at the stable download URL
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Automated signed Android build from commit ${GITHUB_SHA}."
+          notes="Automated signed Android build ${VERSION_NAME} (versionCode ${VERSION_CODE}) from commit ${GITHUB_SHA}."
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload latest hermes-chat-latest.apk hermes-chat-native-preview.apk \
               --repo "$GITHUB_REPOSITORY" \
