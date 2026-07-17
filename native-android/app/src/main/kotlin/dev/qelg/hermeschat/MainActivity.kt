@@ -176,9 +176,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             dismissButton = { TextButton({ vm.approve("deny") }) { Text("Deny") } },
         )
     }
-    state.clarify?.let { clarify ->
-        ClarifyDialog(clarify, onAnswer = { vm.answerClarify(it) })
-    }
+    state.clarify?.let { clarify -> ClarifyDialog(clarify, onAnswer = { vm.answerClarify(it) }) }
 }
 
 @Composable

@@ -457,8 +457,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     } ?: "tool"
                 // Clarify is an interactive prompt — show it as a dialog, not a tool card
                 if (name == "clarify" && event.type == "tool.start") {
-                    val arguments = listOf("arguments", "args", "input", "request")
-                        .firstNotNullOfOrNull { event.payload[it]?.jsonPrimitive?.contentOrNull }
+                    val arguments =
+                        listOf("arguments", "args", "input", "request").firstNotNullOfOrNull {
+                            event.payload[it]?.jsonPrimitive?.contentOrNull
+                        }
                     val parsed = parseClarifyArguments(arguments)
                     _state.update { it.copy(clarify = parsed) }
                     return
