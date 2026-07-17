@@ -1,10 +1,25 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ChatItem
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TimelineStateTest {
+    @Test
+    fun historyRowTreatsNullToolCallsAsNoTools() {
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":"m1","role":"assistant","content":"Hello","tool_calls":null}"""
+                )
+                .jsonObject
+        assertEquals(
+            listOf<ChatItem>(ChatItem.Message("assistant", "Hello", "m1")),
+            messagesFromHistoryRow(row),
+        )
+    }
+
     @Test
     fun completionReconcilesDroppedDeltasWithCanonicalFinalText() {
         val partial = listOf<ChatItem>(ChatItem.Message("assistant", "Hel"))
