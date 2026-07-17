@@ -33,6 +33,8 @@ data class ChatUiState(
     val title: String = "Hermes Chat",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
+    val modelCatalog: ModelCatalog = ModelCatalog(),
+    val modelLoading: Boolean = false,
     val transcribing: Boolean = false,
     val approval: ApprovalRequest? = null,
     val error: ErrorMessage? = null,
@@ -99,6 +101,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 runCatching {
                         next.connect()
                         refreshSessions(next, version)
+                        refreshModels(next, null, version)
                     }
                     .onSuccess {
                         if (client === next && connectionVersion == version) {
@@ -145,6 +148,58 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update { it.copy(sessions = sessions, connecting = false) }
     }
 
+    private suspend fun refreshModels(api: HermesClient, sessionId: String?, version: Long) {
+        val catalog = api.modelOptions(sessionId)
+        if (
+            client !== api ||
+                connectionVersion != version ||
+                (sessionId != null && runtimeId != sessionId)
+        )
+            return
+        _state.update { it.copy(modelCatalog = catalog, modelLoading = false) }
+    }
+
+    fun refreshModels() {
+        val api = client ?: return
+        val version = connectionVersion
+        _state.update { it.copy(modelLoading = true) }
+        viewModelScope.launch {
+            runCatching { refreshModels(api, runtimeId, version) }
+                .onFailure {
+                    if (client === api) {
+                        _state.update { state -> state.copy(modelLoading = false) }
+                        showError(it)
+                    }
+                }
+        }
+    }
+
+    fun selectModel(selection: ModelSelection) {
+        val api = client ?: return
+        val id = runtimeId ?: return
+        if (state.value.active || state.value.modelLoading) return
+        _state.update { it.copy(modelLoading = true, error = null) }
+        viewModelScope.launch {
+            runCatching { api.selectModel(id, selection) }
+                .onSuccess {
+                    if (client === api && runtimeId == id) {
+                        _state.update { current ->
+                            current.copy(
+                                modelCatalog = current.modelCatalog.copy(selected = selection),
+                                modelLoading = false,
+                            )
+                        }
+                    }
+                }
+                .onFailure {
+                    if (client === api && runtimeId == id) {
+                        _state.update { current -> current.copy(modelLoading = false) }
+                        showError(it)
+                    }
+                }
+        }
+    }
+
     fun refresh() {
         val api = client ?: return
         val version = connectionVersion
@@ -171,11 +226,17 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         viewModelScope.launch {
             val api = client ?: return@launch
             runCatching {
-                    val result =
-                        api.request(
-                            "session.create",
-                            mapOf("cols" to JsonPrimitive(96), "source" to JsonPrimitive("mobile")),
+                    val selection = state.value.modelCatalog.selected
+                    val params =
+                        mutableMapOf<String, JsonElement>(
+                            "cols" to JsonPrimitive(96),
+                            "source" to JsonPrimitive("mobile"),
                         )
+                    selection?.let {
+                        params["model"] = JsonPrimitive(it.model)
+                        params["provider"] = JsonPrimitive(it.provider)
+                    }
+                    val result = api.request("session.create", params)
                     runtimeId =
                         result.string("session_id") ?: error("Hermes returned no session ID")
                     val stored = result.string("stored_session_id") ?: runtimeId!!
@@ -223,9 +284,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 ),
                             )
                         if (selectionVersion != version || client !== api) return@runCatching
-                        runtimeId =
+                        val resumedRuntimeId =
                             resumed.string("session_id")
                                 ?: error("Hermes returned no runtime session ID")
+                        runtimeId = resumedRuntimeId
                         val history = messagesFromHistoryRows(api.history(session.id))
                         if (selectionVersion != version || client !== api) return@runCatching
                         _state.update {
@@ -234,6 +296,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 connecting = false,
                             )
                         }
+                        refreshModels(api, resumedRuntimeId, connectionVersion)
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
             }
@@ -266,11 +329,17 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     private suspend fun createAndAwait() {
-        val result =
-            client?.request(
-                "session.create",
-                mapOf("cols" to JsonPrimitive(96), "source" to JsonPrimitive("mobile")),
-            ) ?: return
+        val selection = state.value.modelCatalog.selected
+        val params =
+            mutableMapOf<String, JsonElement>(
+                "cols" to JsonPrimitive(96),
+                "source" to JsonPrimitive("mobile"),
+            )
+        selection?.let {
+            params["model"] = JsonPrimitive(it.model)
+            params["provider"] = JsonPrimitive(it.provider)
+        }
+        val result = client?.request("session.create", params) ?: return
         runtimeId = result.string("session_id")
         val stored = result.string("stored_session_id") ?: runtimeId
         savedState["selectedId"] = stored
@@ -340,6 +409,18 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             return
         }
         when (event.type) {
+            "session.info" -> {
+                val model = event.payload["model"]?.jsonPrimitive?.contentOrNull
+                val provider = event.payload["provider"]?.jsonPrimitive?.contentOrNull
+                if (!model.isNullOrBlank() && !provider.isNullOrBlank()) {
+                    _state.update {
+                        it.copy(
+                            modelCatalog =
+                                it.modelCatalog.copy(selected = ModelSelection(provider, model))
+                        )
+                    }
+                }
+            }
             "message.delta" ->
                 appendDelta(event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "message.complete" -> {

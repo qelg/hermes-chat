@@ -256,6 +256,7 @@ private fun ChatPane(
     onBack: (() -> Unit)? = null,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
+    var showModels by rememberSaveable { mutableStateOf(false) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
     LaunchedEffect(blocks.size, (blocks.lastOrNull() as? ChatItem.Message)?.text) {
@@ -268,9 +269,30 @@ private fun ChatPane(
                     IconButton(it) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Sessions") }
                 }
             },
-            title = { Text(state.title, maxLines = 1) },
+            title = {
+                Column {
+                    Text(state.title, maxLines = 1)
+                    state.modelCatalog.selected?.let {
+                        Text(
+                            it.model,
+                            maxLines = 1,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
+                IconButton(
+                    {
+                        showModels = true
+                        vm.refreshModels()
+                    },
+                    enabled = !state.active,
+                ) {
+                    Icon(Icons.Default.SmartToy, "Choose model")
+                }
                 if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
             },
         )
@@ -333,6 +355,105 @@ private fun ChatPane(
             }
         }
     }
+    if (showModels) {
+        ModelPickerDialog(
+            catalog = state.modelCatalog,
+            loading = state.modelLoading,
+            onRefresh = vm::refreshModels,
+            onSelect = {
+                vm.selectModel(it)
+                showModels = false
+            },
+            onDismiss = { showModels = false },
+        )
+    }
+}
+
+@Composable
+private fun ModelPickerDialog(
+    catalog: ModelCatalog,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+    onSelect: (ModelSelection) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var search by rememberSaveable { mutableStateOf("") }
+    val providers = remember(catalog, search) { catalog.filtered(search) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Choose model", Modifier.weight(1f))
+                IconButton(onRefresh, enabled = !loading) {
+                    Icon(Icons.Default.Refresh, "Refresh models")
+                }
+            }
+        },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    search,
+                    { search = it },
+                    Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    placeholder = { Text("Search providers and models") },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (!loading && providers.isEmpty()) {
+                    Text(
+                        "No configured models found.",
+                        Modifier.padding(vertical = 24.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+                        providers.forEach { provider ->
+                            item(key = "provider-${provider.slug}") {
+                                Text(
+                                    provider.name,
+                                    Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                            }
+                            items(provider.models, key = { "${provider.slug}/${it.id}" }) { model ->
+                                val selection = ModelSelection(provider.slug, model.id)
+                                val selected = selection == catalog.selected
+                                ListItem(
+                                    headlineContent = { Text(model.id) },
+                                    supportingContent = {
+                                        if (model.unavailable) Text("Unavailable for this account")
+                                    },
+                                    leadingContent = {
+                                        RadioButton(
+                                            selected = selected,
+                                            onClick = null,
+                                            enabled = !model.unavailable && !loading,
+                                        )
+                                    },
+                                    modifier =
+                                        Modifier.clickable(
+                                            enabled = !model.unavailable && !loading && !selected
+                                        ) {
+                                            onSelect(selection)
+                                        },
+                                    colors =
+                                        ListItemDefaults.colors(
+                                            containerColor =
+                                                if (selected)
+                                                    MaterialTheme.colorScheme.secondaryContainer
+                                                else Color.Transparent
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable

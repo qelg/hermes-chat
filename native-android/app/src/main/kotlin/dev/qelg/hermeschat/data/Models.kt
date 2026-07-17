@@ -44,6 +44,72 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
     }
 }
 
+data class ModelSelection(val provider: String, val model: String)
+
+data class ModelOption(val id: String, val unavailable: Boolean = false)
+
+data class ModelProvider(val slug: String, val name: String, val models: List<ModelOption>)
+
+data class ModelCatalog(
+    val selected: ModelSelection? = null,
+    val providers: List<ModelProvider> = emptyList(),
+) {
+    fun filtered(query: String): List<ModelProvider> {
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) return providers
+        return providers.mapNotNull { provider ->
+            val providerMatches =
+                provider.name.lowercase().contains(needle) ||
+                    provider.slug.lowercase().contains(needle)
+            val models =
+                if (providerMatches) provider.models
+                else provider.models.filter { it.id.lowercase().contains(needle) }
+            provider.takeIf { models.isNotEmpty() }?.copy(models = models)
+        }
+    }
+
+    companion object {
+        fun fromJson(value: JsonObject): ModelCatalog {
+            val selectedModel = value.string("model")
+            val selectedProvider = value.string("provider")
+            val providers =
+                (value["providers"] as? JsonArray)
+                    ?.mapNotNull { it as? JsonObject }
+                    ?.filter { it["authenticated"]?.jsonPrimitive?.booleanOrNull != false }
+                    ?.mapNotNull { provider ->
+                        val slug =
+                            provider.string("slug")?.takeIf(String::isNotBlank)
+                                ?: return@mapNotNull null
+                        val unavailable =
+                            (provider["unavailable_models"] as? JsonArray)
+                                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                                ?.toSet()
+                                .orEmpty()
+                        val models =
+                            (provider["models"] as? JsonArray)
+                                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                                ?.filter(String::isNotBlank)
+                                ?.distinct()
+                                ?.map { ModelOption(it, it in unavailable) }
+                                .orEmpty()
+                        if (models.isEmpty()) return@mapNotNull null
+                        ModelProvider(slug, provider.string("name") ?: slug, models)
+                    }
+                    .orEmpty()
+            return ModelCatalog(
+                selected =
+                    if (!selectedModel.isNullOrBlank() && !selectedProvider.isNullOrBlank())
+                        ModelSelection(selectedProvider, selectedModel)
+                    else null,
+                providers = providers,
+            )
+        }
+    }
+}
+
+fun modelSwitchValue(selection: ModelSelection): String =
+    "${selection.model} --provider ${selection.provider} --session"
+
 sealed interface ChatItem {
     data class Message(
         val role: String,
