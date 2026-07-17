@@ -855,6 +855,7 @@ private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDis
     if (
         !updateState.checking &&
             !updateState.available &&
+            !updateState.upToDate &&
             !updateState.downloading &&
             updateState.error == null
     )
@@ -866,6 +867,7 @@ private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDis
                 updateState.checking || updateState.downloading ->
                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                 updateState.available -> Icon(Icons.Default.SystemUpdate, null)
+                updateState.upToDate -> Icon(Icons.Default.CheckCircle, null)
                 else -> Icon(Icons.Default.Error, null)
             }
         },
@@ -875,6 +877,7 @@ private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDis
                     updateState.checking -> "Checking for updates…"
                     updateState.downloading -> "Downloading update…"
                     updateState.available -> "Update available"
+                    updateState.upToDate -> "Up to date"
                     updateState.error != null -> "Update check failed"
                     else -> "Update"
                 }
@@ -899,7 +902,11 @@ private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDis
                     }
                     updateState.available ->
                         Text(
-                            "A new version is available: ${updateState.latestVersion ?: "latest"}.\n\nYour current version: ${updateState.currentVersion}\n\nDo you want to download and install it?"
+                            "A new version is available: ${updateState.latestVersion ?: "latest"} (versionCode ${updateState.latestVersionCode ?: "?"}).\n\nYour version: ${updateState.currentVersion}\n\nDownload and install?"
+                        )
+                    updateState.upToDate ->
+                        Text(
+                            "You have the latest version: ${updateState.currentVersion} (versionCode ${updateState.latestVersionCode ?: "?"})."
                         )
                     updateState.error != null -> Text(updateState.error ?: "Unknown error")
                 }

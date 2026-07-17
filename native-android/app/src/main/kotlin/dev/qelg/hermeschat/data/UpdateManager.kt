@@ -22,6 +22,7 @@ import okhttp3.Request
 data class UpdateState(
     val checking: Boolean = false,
     val available: Boolean = false,
+    val upToDate: Boolean = false,
     val currentVersion: String = "",
     val latestVersion: String? = null,
     val latestVersionCode: Long? = null,
@@ -77,12 +78,10 @@ class UpdateManager(private val app: Application) {
                 UpdateState(
                     checking = false,
                     available = available,
+                    upToDate = !available && versionCode != null,
                     currentVersion = currentVersionName,
-                    latestVersion =
-                        if (available)
-                            versionName ?: release["tag_name"]?.jsonPrimitive?.contentOrNull
-                        else null,
-                    latestVersionCode = if (available) versionCode else null,
+                    latestVersion = versionName,
+                    latestVersionCode = versionCode,
                     downloadUrl = if (available) downloadUrl else null,
                 )
         } catch (e: Exception) {
@@ -169,15 +168,21 @@ class UpdateManager(private val app: Application) {
         }
 
     private fun parseVersion(release: kotlinx.serialization.json.JsonObject): Pair<String?, Long?> {
-        val tag = release["tag_name"]?.jsonPrimitive?.contentOrNull ?: return null to null
-        val versionName = tag.removePrefix("v")
-        // Compare version strings: if the current versionName differs from the release tag,
-        // consider an update available. Also check if assets contain an APK.
+        // Parse versionCode from release body (set by CI): "versionCode 38"
+        val body = release["body"]?.jsonPrimitive?.contentOrNull ?: ""
+        val versionCodeMatch = Regex("""versionCode\s+(\d+)""").find(body)
+        val releaseVersionCode = versionCodeMatch?.groupValues?.get(1)?.toLongOrNull()
+        // Parse versionName from release body: "build 0.1.3.dev5 (versionCode"
+        val versionNameMatch = Regex("""build\s+(\S+)\s+\(versionCode""").find(body)
+        val releaseVersionName = versionNameMatch?.groupValues?.get(1)
+
         val hasApk =
             release["assets"]?.jsonArray?.any {
                 it.jsonObject["name"]?.jsonPrimitive?.contentOrNull?.endsWith(".apk") == true
             } == true
-        val isNewer = versionName != currentVersionName.removePrefix("v") && hasApk
-        return if (isNewer) versionName to 1L else null to null
+
+        if (releaseVersionCode == null || !hasApk) return null to null
+        val isNewer = releaseVersionCode > currentVersionCode
+        return if (isNewer) releaseVersionName to releaseVersionCode else null to null
     }
 }
