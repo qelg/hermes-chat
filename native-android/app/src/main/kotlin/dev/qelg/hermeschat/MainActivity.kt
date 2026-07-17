@@ -783,7 +783,7 @@ private fun ClarifyDialog(request: ClarifyRequest, onAnswer: (String) -> Unit) {
     var otherText by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = {},
-        icon = { Icon(Icons.Default.Help, null) },
+        icon = { Icon(Icons.AutoMirrored.Filled.Help, null) },
         title = { Text(request.question) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
