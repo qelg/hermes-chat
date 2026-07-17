@@ -1,7 +1,9 @@
 package dev.qelg.hermeschat.data
 
 import java.io.Closeable
+import java.io.InterruptedIOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -43,7 +45,14 @@ class HermesClient(
     private val config: ConnectionConfig,
     private val scope: CoroutineScope,
     private val client: OkHttpClient = OkHttpClient.Builder().cookieJar(MemoryCookieJar()).build(),
+    transcriptionTimeoutMillis: Long = TimeUnit.MINUTES.toMillis(2),
 ) : Closeable {
+    private val transcriptionClient =
+        client
+            .newBuilder()
+            .readTimeout(transcriptionTimeoutMillis, TimeUnit.MILLISECONDS)
+            .callTimeout(transcriptionTimeoutMillis, TimeUnit.MILLISECONDS)
+            .build()
     private val json = Json { ignoreUnknownKeys = true }
     private val ids = AtomicLong()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
@@ -261,17 +270,25 @@ class HermesClient(
 
     suspend fun transcribe(bytes: ByteArray, mimeType: String): String {
         val data = java.util.Base64.getEncoder().encodeToString(bytes)
-        return http(
-                "POST",
-                "/api/audio/transcribe",
-                buildJsonObject {
-                    put("data_url", "data:$mimeType;base64,$data")
-                    put("mime_type", mimeType)
-                },
-            )
-            .string("transcript")
-            ?.trim()
-            ?.takeIf(String::isNotEmpty) ?: error("Transcription returned no text")
+        val response =
+            try {
+                http(
+                    "POST",
+                    "/api/audio/transcribe",
+                    buildJsonObject {
+                        put("data_url", "data:$mimeType;base64,$data")
+                        put("mime_type", mimeType)
+                    },
+                    transcriptionClient,
+                )
+            } catch (error: InterruptedIOException) {
+                throw IllegalStateException(
+                    "Voice transcription timed out. Please check the server and try again.",
+                    error,
+                )
+            }
+        return response.string("transcript")?.trim()?.takeIf(String::isNotEmpty)
+            ?: error("Transcription returned no text")
     }
 
     private suspend fun login() {
@@ -290,7 +307,12 @@ class HermesClient(
         )
     }
 
-    private suspend fun http(method: String, path: String, body: JsonObject? = null): JsonObject =
+    private suspend fun http(
+        method: String,
+        path: String,
+        body: JsonObject? = null,
+        httpClient: OkHttpClient = client,
+    ): JsonObject =
         withContext(Dispatchers.IO) {
             val request =
                 Request.Builder()
@@ -307,7 +329,7 @@ class HermesClient(
                             )
                     }
                     .build()
-            client.newCall(request).execute().use { response ->
+            httpClient.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
                 check(response.isSuccessful) { "Hermes HTTP ${response.code}: $text" }
                 if (text.isBlank()) JsonObject(emptyMap())

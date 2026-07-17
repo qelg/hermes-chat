@@ -17,12 +17,14 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HermesClientTest {
@@ -68,6 +70,68 @@ class HermesClientTest {
             assertEquals(
                 "gpt-5.6-sol --provider openai-codex --session",
                 switchParams["value"]!!.jsonPrimitive.content,
+            )
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun transcriptionTimeoutExplainsHowToRecover() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"transcript":"Too late"}""")
+                .setBodyDelay(150, TimeUnit.MILLISECONDS)
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(
+                ConnectionConfig(server.url("/").toString(), token = "test"),
+                scope,
+                transcriptionTimeoutMillis = 50,
+            )
+        try {
+            val error =
+                runCatching { client.transcribe(byteArrayOf(1, 2, 3), "audio/mp4") }
+                    .exceptionOrNull()
+            assertTrue(error?.message.orEmpty().contains("Voice transcription timed out"))
+            assertTrue(error?.message.orEmpty().contains("try again", ignoreCase = true))
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun transcriptionCanOutliveTheDefaultHttpReadTimeout() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"transcript":"Long recording transcript"}""")
+                .setBodyDelay(150, TimeUnit.MILLISECONDS)
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val httpClient = OkHttpClient.Builder().readTimeout(50, TimeUnit.MILLISECONDS).build()
+        val client =
+            HermesClient(
+                ConnectionConfig(server.url("/").toString(), token = "test"),
+                scope,
+                httpClient,
+            )
+        try {
+            assertEquals(
+                "Long recording transcript",
+                client.transcribe(byteArrayOf(1, 2, 3), "audio/mp4"),
             )
         } finally {
             client.close()
