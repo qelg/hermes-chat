@@ -9,6 +9,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TimelineStateTest {
@@ -146,5 +148,45 @@ class TimelineStateTest {
             "14:37",
             formatClockTime(message.timestamp!!, ZoneId.of("Europe/Berlin"), Locale.GERMANY),
         )
+    }
+
+    @Test
+    fun clarifyArgumentsParseQuestionAndChoices() {
+        val request =
+            parseClarifyArguments("""{"question":"Which target?","choices":["staging","prod"]}""")
+        assertNotNull(request)
+        assertEquals("Which target?", request!!.question)
+        assertEquals(listOf("staging", "prod"), request.choices)
+    }
+
+    @Test
+    fun clarifyArgumentsWithoutChoicesIsOpenEnded() {
+        val request = parseClarifyArguments("""{"question":"What do you think?"}""")
+        assertNotNull(request)
+        assertEquals("What do you think?", request!!.question)
+        assertEquals(emptyList<String>(), request.choices)
+    }
+
+    @Test
+    fun clarifyArgumentsNullReturnsNull() {
+        assertNull(parseClarifyArguments(null))
+    }
+
+    @Test
+    fun clarifyArgumentsInvalidJsonReturnsNull() {
+        assertNull(parseClarifyArguments("not json"))
+    }
+
+    @Test
+    fun clarifyArgumentsWithoutQuestionReturnsNull() {
+        assertNull(parseClarifyArguments("""{"choices":["a"]}"""))
+    }
+
+    @Test
+    fun clarifyArgumentsTruncatesExcessChoices() {
+        val request =
+            parseClarifyArguments("""{"question":"Pick","choices":["a","b","c","d","e","f"]}""")
+        assertNotNull(request)
+        assertEquals(listOf("a", "b", "c", "d"), request!!.choices)
     }
 }

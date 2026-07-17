@@ -176,6 +176,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             dismissButton = { TextButton({ vm.approve("deny") }) { Text("Deny") } },
         )
     }
+    state.clarify?.let { clarify -> ClarifyDialog(clarify, onAnswer = { vm.answerClarify(it) }) }
 }
 
 @Composable
@@ -333,9 +334,7 @@ private fun ChatPane(
             }
         }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-            VoiceButton(vm, enabled = !state.transcribing) { text ->
-                vm.send(text)
-            }
+            VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
             OutlinedTextField(
                 input,
                 { input = it },
@@ -773,4 +772,48 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) ->
             discardRecording()
         }
     }
+}
+
+@Composable
+private fun ClarifyDialog(request: ClarifyRequest, onAnswer: (String) -> Unit) {
+    var otherText by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = {},
+        icon = { Icon(Icons.AutoMirrored.Filled.Help, null) },
+        title = { Text(request.question) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                request.choices.forEach { choice ->
+                    Button(
+                        { onAnswer(choice) },
+                        Modifier.fillMaxWidth(),
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ),
+                    ) {
+                        Text(choice, Modifier.weight(1f))
+                    }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                OutlinedTextField(
+                    otherText,
+                    { otherText = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Other — type your answer") },
+                    singleLine = true,
+                )
+                Button(
+                    { onAnswer(otherText) },
+                    Modifier.fillMaxWidth(),
+                    enabled = otherText.isNotBlank(),
+                ) {
+                    Text("Send")
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {},
+    )
 }

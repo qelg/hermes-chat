@@ -297,6 +297,8 @@ data class ApprovalRequest(
     val allowPermanent: Boolean,
 )
 
+data class ClarifyRequest(val question: String, val choices: List<String> = emptyList())
+
 data class ConnectionConfig(
     val baseUrl: String,
     val username: String = "",
