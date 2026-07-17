@@ -169,15 +169,14 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             },
             confirmButton = {
                 Row {
-                    TextButton({ vm.approve("allow_once") }) { Text("Allow once") }
+                    TextButton({ vm.approve("once") }) { Text("Allow once") }
                     if (approval.allowPermanent)
-                        TextButton({ vm.approve("allow_always") }) { Text("Always") }
+                        TextButton({ vm.approve("always") }) { Text("Always") }
                 }
             },
             dismissButton = { TextButton({ vm.approve("deny") }) { Text("Deny") } },
         )
     }
-    state.clarify?.let { clarify -> ClarifyDialog(clarify, onAnswer = { vm.answerClarify(it) }) }
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
 
@@ -338,20 +337,53 @@ private fun ChatPane(
                 Text("Uploading and transcribing voice…")
             }
         }
+        state.clarify?.let { clarify ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Help,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        clarify.question,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (clarify.choices.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        clarify.choices.forEach { choice ->
+                            AssistChip(
+                                onClick = { vm.answerClarify(choice) },
+                                label = { Text(choice) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
             VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
             OutlinedTextField(
                 input,
                 { input = it },
                 Modifier.weight(1f),
-                placeholder = { Text("Message Hermes") },
+                placeholder = {
+                    Text(state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes")
+                },
                 maxLines = 6,
             )
             IconButton(
                 {
                     val text = input
                     input = ""
-                    vm.send(text)
+                    if (state.clarify != null) vm.answerClarify(text) else vm.send(text)
                 },
                 enabled = input.isNotBlank() && !state.connecting,
             ) {
@@ -804,50 +836,6 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) ->
             discardRecording()
         }
     }
-}
-
-@Composable
-private fun ClarifyDialog(request: ClarifyRequest, onAnswer: (String) -> Unit) {
-    var otherText by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = {},
-        icon = { Icon(Icons.AutoMirrored.Filled.Help, null) },
-        title = { Text(request.question) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                request.choices.forEach { choice ->
-                    Button(
-                        { onAnswer(choice) },
-                        Modifier.fillMaxWidth(),
-                        colors =
-                            ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            ),
-                    ) {
-                        Text(choice, Modifier.weight(1f))
-                    }
-                }
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                OutlinedTextField(
-                    otherText,
-                    { otherText = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Other — type your answer") },
-                    singleLine = true,
-                )
-                Button(
-                    { onAnswer(otherText) },
-                    Modifier.fillMaxWidth(),
-                    enabled = otherText.isNotBlank(),
-                ) {
-                    Text("Send")
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = {},
-    )
 }
 
 @Composable
