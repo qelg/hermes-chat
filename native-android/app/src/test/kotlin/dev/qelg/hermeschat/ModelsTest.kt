@@ -6,7 +6,9 @@ import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
+import dev.qelg.hermeschat.data.toolCountBreakdown
 import dev.qelg.hermeschat.data.upsertTool
+import java.time.Instant
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -27,32 +29,132 @@ class ModelsTest {
 
     @Test
     fun fourConsecutiveToolsBecomeOneExpandableGroup() {
-        val tools = (1..4).map { ChatItem.Tool("$it", "terminal", "started", "details") }
+        val tools = (1..4).map { ChatItem.Tool("$it", "terminal", "completed", result = "details") }
         val blocks = groupTimeline(tools)
         assertEquals(1, blocks.size)
         assertTrue(blocks.single() is ChatItem.ToolGroup)
-        assertEquals(4, (blocks.single() as ChatItem.ToolGroup).tools.size)
+        assertEquals(4, (blocks.single() as ChatItem.ToolGroup).callCount)
     }
 
     @Test
     fun textSplitsToolRuns() {
         val items =
             listOf(
-                ChatItem.Tool("1", "terminal", "started", ""),
+                ChatItem.Tool("1", "terminal", "completed", result = ""),
                 ChatItem.Message("assistant", "done"),
-                ChatItem.Tool("2", "file", "started", ""),
+                ChatItem.Tool("2", "file", "completed", result = ""),
             )
         assertEquals(3, groupTimeline(items).size)
     }
 
     @Test
     fun completionReplacesMatchingToolStartInsteadOfDuplicatingIt() {
-        val started = listOf<ChatItem>(ChatItem.Tool("call-1", "terminal", "started", "input"))
+        val startedAt = Instant.parse("2026-07-17T10:00:00Z")
+        val started =
+            listOf<ChatItem>(
+                ChatItem.Tool(
+                    "call-1",
+                    "terminal",
+                    "running",
+                    arguments = "input",
+                    startedAt = startedAt,
+                )
+            )
         val updated =
-            upsertTool(started, ChatItem.Tool("call-1", "terminal", "completed", "output", 1250))
+            upsertTool(
+                started,
+                ChatItem.Tool(
+                    "call-1",
+                    "terminal",
+                    "completed",
+                    result = "output",
+                    completedAt = Instant.parse("2026-07-17T10:00:01.250Z"),
+                ),
+            )
         assertEquals(1, updated.size)
-        assertEquals("completed", (updated.single() as ChatItem.Tool).state)
-        assertEquals(1250L, (updated.single() as ChatItem.Tool).durationMs)
+        val completed = updated.single() as ChatItem.Tool
+        assertEquals("completed", completed.state)
+        assertEquals(1250L, completed.durationMs)
+        assertEquals("input", completed.arguments)
+        assertEquals("output", completed.result)
+    }
+
+    @Test
+    fun overlappingStartsBecomeOnePersistentParallelGroup() {
+        val first =
+            ChatItem.Tool("1", "terminal", "running", arguments = "one", startedAt = Instant.EPOCH)
+        val second =
+            ChatItem.Tool("2", "read_file", "running", arguments = "two", startedAt = Instant.EPOCH)
+        val started = upsertTool(upsertTool(emptyList(), first), second)
+        val group = started.single() as ChatItem.ParallelToolGroup
+        assertEquals(listOf("1", "2"), group.tools.map { it.id })
+
+        val partiallyComplete =
+            upsertTool(
+                started,
+                first.copy(
+                    state = "completed",
+                    result = "ok",
+                    completedAt = Instant.EPOCH.plusSeconds(2),
+                ),
+            )
+        val retained = partiallyComplete.single() as ChatItem.ParallelToolGroup
+        assertEquals(listOf("completed", "running"), retained.tools.map { it.state })
+    }
+
+    @Test
+    fun sequentialToolsAreNotGroupedAsParallel() {
+        val first = ChatItem.Tool("1", "terminal", "completed", result = "ok")
+        val second = ChatItem.Tool("2", "read_file", "running", arguments = "path")
+        assertEquals(listOf(first, second), upsertTool(listOf(first), second))
+    }
+
+    @Test
+    fun completedParallelGroupMovesIntoSummaryAtomicallyAndCountsChildren() {
+        val parallel =
+            ChatItem.ParallelToolGroup(
+                "batch-1",
+                listOf(
+                    ChatItem.Tool("1", "terminal", "completed", result = "a"),
+                    ChatItem.Tool("2", "terminal", "completed", result = "b"),
+                ),
+            )
+        val items =
+            listOf<ChatItem>(
+                ChatItem.Tool("0", "read_file", "completed", result = "x"),
+                parallel,
+                ChatItem.Tool("3", "patch", "completed", result = "y"),
+            )
+        val summary = groupTimeline(items, minimumGroupSize = 4).single() as ChatItem.ToolGroup
+        assertEquals(items, summary.operations)
+        assertEquals(
+            linkedMapOf("read_file" to 1, "terminal" to 2, "patch" to 1),
+            toolCountBreakdown(summary.operations),
+        )
+    }
+
+    @Test
+    fun activeParallelGroupNeverMovesIntoCompletedSummary() {
+        val active =
+            ChatItem.ParallelToolGroup(
+                "batch-1",
+                listOf(
+                    ChatItem.Tool("1", "terminal", "completed", result = "a"),
+                    ChatItem.Tool("2", "read_file", "running", arguments = "b"),
+                ),
+            )
+        val blocks =
+            groupTimeline(
+                listOf(
+                    ChatItem.Tool("a", "patch", "completed", result = ""),
+                    ChatItem.Tool("b", "patch", "completed", result = ""),
+                    ChatItem.Tool("c", "patch", "completed", result = ""),
+                    ChatItem.Tool("d", "patch", "completed", result = ""),
+                    active,
+                )
+            )
+        assertTrue(blocks.first() is ChatItem.ToolGroup)
+        assertEquals(active, blocks.last())
     }
 
     @Test

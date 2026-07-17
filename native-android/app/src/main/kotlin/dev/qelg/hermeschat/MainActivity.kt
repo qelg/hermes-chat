@@ -326,60 +326,146 @@ private fun ChatPane(
 @Composable
 private fun TimelineItem(item: ChatItem) {
     when (item) {
-        is ChatItem.Message ->
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    if (item.role == "user") Arrangement.End else Arrangement.Start,
-            ) {
-                Surface(
-                    color =
-                        if (item.role == "user") MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.widthIn(max = 680.dp),
-                ) {
-                    if (item.role == "assistant") MarkdownText(item.text, Modifier.padding(12.dp))
-                    else SelectionContainer { Text(item.text, Modifier.padding(12.dp)) }
-                }
-            }
+        is ChatItem.Message -> MessageCard(item)
         is ChatItem.Tool -> ToolCard(item)
-        is ChatItem.ToolGroup -> {
-            var expanded by rememberSaveable { mutableStateOf(false) }
-            Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
-                Column(Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Build, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("${item.tools.size} tool calls", Modifier.weight(1f))
-                        Icon(
-                            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            null,
-                        )
-                    }
-                    if (expanded) item.tools.forEach { ToolCard(it) }
-                }
+        is ChatItem.ParallelToolGroup -> ParallelToolGroupCard(item)
+        is ChatItem.ToolGroup -> ToolSummaryCard(item)
+        is ChatItem.Status ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(item.text, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                item.timestamp?.let { ClockText(it) }
             }
-        }
-        is ChatItem.Status -> Text(item.text, style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
-private fun ToolCard(tool: ChatItem.Tool) {
-    var expanded by rememberSaveable(tool.id, tool.state) { mutableStateOf(false) }
+private fun MessageCard(message: ChatItem.Message) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            color =
+                if (message.role == "user") MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.widthIn(max = 680.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                if (message.role == "assistant") MarkdownText(message.text)
+                else SelectionContainer { Text(message.text) }
+                message.timestamp?.let {
+                    ClockText(it, Modifier.align(Alignment.End).padding(top = 2.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolSummaryCard(group: ChatItem.ToolGroup) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val breakdown = remember(group.operations) { toolCountBreakdown(group.operations) }
+    Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Build, null)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("${group.callCount} tool calls")
+                    Text(
+                        breakdown.entries.joinToString(" · ") { "${it.key} ×${it.value}" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                    )
+                }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+            }
+            if (expanded)
+                group.operations.forEach { operation ->
+                    when (operation) {
+                        is ChatItem.Tool -> ToolCard(operation)
+                        is ChatItem.ParallelToolGroup -> ParallelToolGroupCard(operation)
+                        else -> Unit
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
+    var expanded by rememberSaveable(group.id) { mutableStateOf(true) }
+    val complete = group.final
+    val totalMs =
+        if (complete && group.tools.all { it.durationMs != null }) {
+            val first = group.tools.mapNotNull { it.startedAt }.minOrNull()
+            val last = group.tools.mapNotNull { it.completedAt }.maxOrNull()
+            if (first != null && last != null)
+                java.time.Duration.between(first, last).toMillis().takeIf { it >= 0 }
+            else null
+        } else null
+    Card(
+        Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        colors =
+            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AccountTree, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Parallel · ${group.tools.size} calls", Modifier.weight(1f))
+                totalMs?.let {
+                    Text(formatElapsed(it), style = MaterialTheme.typography.labelSmall)
+                }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+            }
+            if (expanded) group.tools.forEach { ToolCard(it, nested = true) }
+        }
+    }
+}
+
+@Composable
+private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
+    var expanded by rememberSaveable(tool.id) { mutableStateOf(false) }
+    var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
+    LaunchedEffect(tool.id, tool.state, tool.startedAt) {
+        while (!tool.final && tool.startedAt != null) {
+            now = java.time.Instant.now()
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    val durationMs =
+        tool.durationMs
+            ?: if (!tool.final && tool.startedAt != null)
+                java.time.Duration.between(tool.startedAt, now).toMillis().coerceAtLeast(0)
+            else null
     ListItem(
         headlineContent = {
             Text(
-                "${tool.name} · ${tool.state}${tool.durationMs?.let { " · %.1f s".format(it / 1000.0) }.orEmpty()}"
+                buildString {
+                    append(tool.name)
+                    append(" · ")
+                    append(tool.state)
+                    durationMs?.let {
+                        append(" · ")
+                        if (tool.durationEstimated) append("≈ ")
+                        append(formatElapsed(it))
+                    }
+                }
             )
         },
         leadingContent = { Icon(toolIcon(tool.name), null) },
         trailingContent = {
-            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+            Column(horizontalAlignment = Alignment.End) {
+                (tool.startedAt ?: tool.completedAt)?.let { ClockText(it) }
+                if (tool.details.isNotBlank())
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+            }
         },
         supportingContent = {
-            if (expanded)
+            if (expanded && tool.details.isNotBlank())
                 SelectionContainer {
                     Text(
                         tool.details,
@@ -387,7 +473,37 @@ private fun ToolCard(tool: ChatItem.Tool) {
                     )
                 }
         },
-        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        colors =
+            ListItemDefaults.colors(
+                containerColor =
+                    if (nested) MaterialTheme.colorScheme.surfaceContainerHigh
+                    else Color.Transparent
+            ),
+        modifier =
+            Modifier.fillMaxWidth()
+                .then(
+                    if (tool.details.isNotBlank()) Modifier.clickable { expanded = !expanded }
+                    else Modifier
+                ),
+    )
+}
+
+private fun formatElapsed(durationMs: Long): String = "%.1f s".format(durationMs / 1000.0)
+
+@Composable
+private fun ClockText(timestamp: java.time.Instant, modifier: Modifier = Modifier) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val locale =
+        remember(configuration) {
+            configuration.locales.get(0)?.let {
+                java.util.Locale.forLanguageTag(it.toLanguageTag())
+            } ?: java.util.Locale.getDefault()
+        }
+    Text(
+        formatClockTime(timestamp, locale = locale),
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
     )
 }
 

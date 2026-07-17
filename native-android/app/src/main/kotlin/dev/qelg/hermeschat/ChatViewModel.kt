@@ -3,6 +3,7 @@ package dev.qelg.hermeschat
 import android.app.Application
 import androidx.lifecycle.*
 import dev.qelg.hermeschat.data.*
+import java.time.Instant
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -212,7 +213,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         runtimeId =
                             resumed.string("session_id")
                                 ?: error("Hermes returned no runtime session ID")
-                        val history = api.history(session.id).flatMap(::messagesFromHistoryRow)
+                        val history = messagesFromHistoryRows(api.history(session.id))
                         if (selectionVersion != version || client !== api) return@runCatching
                         _state.update {
                             it.copy(
@@ -233,7 +234,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             val id = runtimeId ?: return@launch
             _state.update {
                 it.copy(
-                    items = it.items + ChatItem.Message("user", clean),
+                    items = it.items + ChatItem.Message("user", clean, timestamp = Instant.now()),
                     active = true,
                     error = null,
                 )
@@ -330,13 +331,20 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         ?.jsonPrimitive
                         ?.contentOrNull
                         .orEmpty()
+                val timestamp = event.payload.instant()
                 _state.update {
-                    it.copy(items = reconcileAssistantCompletion(it.items, text), active = false)
+                    it.copy(
+                        items = reconcileAssistantCompletion(it.items, text, timestamp),
+                        active = false,
+                    )
                 }
                 scheduleRefresh()
             }
             "tool.start",
-            "tool.complete" -> {
+            "tool.complete",
+            "tool.failed",
+            "tool.error",
+            "tool.cancelled" -> {
                 val name =
                     listOf("name", "tool", "tool_name").firstNotNullOfOrNull {
                         event.payload[it]?.jsonPrimitive?.contentOrNull
@@ -345,14 +353,40 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     listOf("tool_call_id", "tool_id", "call_id", "id").firstNotNullOfOrNull {
                         event.payload[it]?.jsonPrimitive?.contentOrNull
                     }
-                val state = if (event.type == "tool.start") "started" else "completed"
+                val state =
+                    when (event.type) {
+                        "tool.start" -> "running"
+                        "tool.failed",
+                        "tool.error" -> "failed"
+                        "tool.cancelled" -> "cancelled"
+                        else -> "completed"
+                    }
+                val eventTime = event.payload.instant() ?: Instant.now()
+                val argument =
+                    listOf("arguments", "args", "input", "request").firstNotNullOfOrNull {
+                        event.payload[it]?.displayString()
+                    }
+                val result =
+                    listOf("result", "output", "content").firstNotNullOfOrNull {
+                        event.payload[it]?.displayString()
+                    }
+                val error = event.payload["error"]?.displayString()
+                val batchId =
+                    listOf("batch_id", "group_id", "parallel_group_id").firstNotNullOfOrNull {
+                        event.payload[it]?.jsonPrimitive?.contentOrNull
+                    }
                 val tool =
                     ChatItem.Tool(
                         id,
                         name,
                         state,
-                        JsonObject(event.payload).toString(),
-                        event.payload["duration_ms"]?.jsonPrimitive?.longOrNull,
+                        arguments = if (state == "running") argument else null,
+                        result = if (state == "completed") result else null,
+                        error = if (state == "failed") error ?: result else null,
+                        startedAt = if (state == "running") eventTime else null,
+                        completedAt = if (state != "running") eventTime else null,
+                        durationMs = event.payload["duration_ms"]?.jsonPrimitive?.longOrNull,
+                        batchId = batchId,
                     )
                 _state.update { it.copy(items = upsertTool(it.items, tool)) }
             }
@@ -409,7 +443,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             val last = items.lastOrNull()
             if (last is ChatItem.Message && last.role == "assistant")
                 items[items.lastIndex] = last.copy(text = last.text + text)
-            else items += ChatItem.Message("assistant", text)
+            else items += ChatItem.Message("assistant", text, timestamp = Instant.now())
             state.copy(items = items)
         }
     }
@@ -427,13 +461,18 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
 internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
     val role = row.string("role") ?: "assistant"
+    val timestamp = row.instant()
     if (role == "tool")
         return listOf(
             ChatItem.Tool(
-                row.string("tool_call_id"),
-                row.string("tool_name") ?: row.string("name") ?: "tool",
-                "completed",
-                row["content"]?.toString().orEmpty(),
+                id = row.string("tool_call_id"),
+                name = row.string("tool_name") ?: row.string("name") ?: "tool",
+                state = row.string("state") ?: "completed",
+                result = (row["content"] ?: row["text"])?.displayString().orEmpty(),
+                error = row["error"]?.displayString(),
+                completedAt = timestamp,
+                durationMs = row["duration_ms"]?.jsonPrimitive?.longOrNull,
+                durationEstimated = false,
             )
         )
     val raw = row["content"] ?: row["text"]
@@ -445,50 +484,168 @@ internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
             else -> ""
         }
     val result = mutableListOf<ChatItem>()
-    if (text.isNotBlank()) result += ChatItem.Message(role, text, row.string("id"))
-    (row["tool_calls"] as? JsonArray)
-        ?.mapNotNull { it as? JsonObject }
-        ?.forEach { call ->
-            val function = call["function"] as? JsonObject
-            result +=
+    if (text.isNotBlank())
+        result += ChatItem.Message(role, text, row.string("id"), timestamp = timestamp)
+    val tools =
+        (row["tool_calls"] as? JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.map { call ->
+                val function = call["function"] as? JsonObject
                 ChatItem.Tool(
-                    call.string("id"),
-                    function?.string("name") ?: call.string("name") ?: "tool",
-                    "started",
-                    (function?.get("arguments") ?: call["input"]).toString(),
+                    id = call.string("id"),
+                    name = function?.string("name") ?: call.string("name") ?: "tool",
+                    state = "running",
+                    arguments = (function?.get("arguments") ?: call["input"])?.displayString(),
+                    startedAt = timestamp,
+                    batchId = row.string("id")?.let { "history:$it" },
                 )
-        }
+            }
+            .orEmpty()
+    when (tools.size) {
+        0 -> Unit
+        1 -> result += tools.single()
+        else ->
+            result +=
+                ChatItem.ParallelToolGroup(
+                    tools.first().batchId ?: "history:${tools.first().id ?: result.size}",
+                    tools,
+                )
+    }
     return result
+}
+
+internal fun messagesFromHistoryRows(rows: List<JsonObject>): List<ChatItem> =
+    rows.fold(emptyList()) { items, row ->
+        messagesFromHistoryRow(row).fold(items) { current, item ->
+            when (item) {
+                is ChatItem.Tool -> {
+                    val estimated =
+                        item.completedAt != null &&
+                            findTool(current, item.id)?.startedAt != null &&
+                            java.time.Duration.between(
+                                    findTool(current, item.id)!!.startedAt,
+                                    item.completedAt,
+                                )
+                                .toMillis() >= 100
+                    upsertTool(
+                        current,
+                        item.copy(durationEstimated = estimated, deriveDuration = estimated),
+                    )
+                }
+                else -> current + item
+            }
+        }
+    }
+
+private fun findTool(items: List<ChatItem>, id: String?): ChatItem.Tool? {
+    if (id == null) return null
+    items.forEach { item ->
+        when (item) {
+            is ChatItem.Tool -> if (item.id == id) return item
+            is ChatItem.ParallelToolGroup ->
+                item.tools
+                    .firstOrNull { it.id == id }
+                    ?.let {
+                        return it
+                    }
+            else -> Unit
+        }
+    }
+    return null
 }
 
 internal fun reconcileAssistantCompletion(
     items: List<ChatItem>,
     finalText: String,
+    timestamp: Instant? = null,
 ): List<ChatItem> {
     if (finalText.isBlank()) return items
     val index = items.indexOfLast { it is ChatItem.Message && it.role == "assistant" }
-    if (index == -1) return items + ChatItem.Message("assistant", finalText)
+    if (index == -1) return items + ChatItem.Message("assistant", finalText, timestamp = timestamp)
     return items.toMutableList().apply {
         val current = this[index] as ChatItem.Message
-        this[index] = current.copy(text = finalText)
+        this[index] = current.copy(text = finalText, timestamp = timestamp ?: current.timestamp)
     }
 }
 
+private fun ChatItem.toolIds(): Set<String> =
+    when (this) {
+        is ChatItem.Tool -> setOfNotNull(id)
+        is ChatItem.ParallelToolGroup -> tools.mapNotNullTo(linkedSetOf()) { it.id }
+        else -> emptySet()
+    }
+
 internal fun mergeHistoryAndLive(history: List<ChatItem>, live: List<ChatItem>): List<ChatItem> {
     val messageIds = history.mapNotNull { (it as? ChatItem.Message)?.id }.toMutableSet()
-    val toolIds = history.mapNotNull { (it as? ChatItem.Tool)?.id }.toMutableSet()
     val historyTail = history.lastOrNull()
-    return history +
-        live.filter { item ->
-            when (item) {
-                is ChatItem.Message ->
+    var result = history
+    live.forEach { item ->
+        when (item) {
+            is ChatItem.Message -> {
+                val shouldAdd =
                     if (item.id != null) messageIds.add(item.id)
                     else
                         historyTail !is ChatItem.Message ||
                             historyTail.role != item.role ||
                             historyTail.text != item.text
-                is ChatItem.Tool -> item.id == null || toolIds.add(item.id)
-                else -> true
+                if (shouldAdd) result += item
+            }
+            is ChatItem.Tool -> result = upsertTool(result, item)
+            is ChatItem.ParallelToolGroup -> result = mergeParallelGroup(result, item)
+            else -> result += item
+        }
+    }
+    return result
+}
+
+private fun mergeParallelGroup(
+    items: List<ChatItem>,
+    live: ChatItem.ParallelToolGroup,
+): List<ChatItem> {
+    val liveIds = live.toolIds()
+    val matching =
+        items.indices.filter { index ->
+            val ids = items[index].toolIds()
+            ids.isNotEmpty() && ids.any(liveIds::contains)
+        }
+    if (matching.isEmpty()) return items + live
+
+    var updated = items
+    live.tools
+        .filter { it.id != null && findTool(updated, it.id) != null }
+        .forEach { updated = upsertTool(updated, it) }
+    val refreshedMatching =
+        updated.indices.filter { index ->
+            val ids = updated[index].toolIds()
+            ids.isNotEmpty() && ids.any(liveIds::contains)
+        }
+    val existingTools =
+        refreshedMatching.flatMap { index ->
+            when (val operation = updated[index]) {
+                is ChatItem.Tool -> listOf(operation)
+                is ChatItem.ParallelToolGroup -> operation.tools
+                else -> emptyList()
             }
         }
+    val byId = existingTools.mapNotNull { tool -> tool.id?.let { it to tool } }.toMap()
+    val mergedTools =
+        live.tools.map { tool -> tool.id?.let(byId::get) ?: tool } +
+            existingTools.filter { it.id !in liveIds }
+    val insertion = refreshedMatching.minOrNull() ?: updated.size
+    val result = updated.toMutableList()
+    refreshedMatching.sortedDescending().forEach(result::removeAt)
+    result.add(insertion.coerceAtMost(result.size), live.copy(tools = mergedTools))
+    return result
 }
+
+private fun Map<String, JsonElement>.instant(): Instant? =
+    listOf("timestamp", "created_at", "updated_at", "time").firstNotNullOfOrNull { key ->
+        this[key]?.jsonPrimitive?.contentOrNull?.let {
+            runCatching { Instant.parse(it) }.getOrNull()
+        }
+    }
+
+private fun JsonObject.instant(): Instant? = (this as Map<String, JsonElement>).instant()
+
+private fun JsonElement.displayString(): String =
+    (this as? JsonPrimitive)?.contentOrNull ?: toString()
