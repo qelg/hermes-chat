@@ -1,6 +1,6 @@
-# Native Android migration
+# Native Android migration (complete)
 
-Hermes Chat now contains a native Kotlin/Jetpack Compose client in `native-android/` alongside the shipping Flutter app. The Flutter APK remains the stable download until the parity checklist below has been verified on real devices; removing Flutter is intentionally a separate change.
+Hermes Chat is now a native Kotlin/Jetpack Compose Android client. The Flutter client has been retired.
 
 ## Architecture
 
@@ -33,21 +33,6 @@ Audio transcription uses `POST /api/audio/transcribe` with `{ "data_url": "data:
 ./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
 
-CI publishes `hermes-chat-native-preview.apk` as both a workflow artifact and a preview asset on the existing `latest` release while continuing to publish the Flutter APK as the stable artifact.
+## Signing
 
-## Parity checklist
-
-- [x] Password and token authentication
-- [x] Session list, search, creation, resume, history, and refresh
-- [x] Streaming assistant text and active-session refresh
-- [x] Tool start/end cards, semantic icons, elapsed time, and grouping
-- [x] Markdown assistant messages
-- [x] Voice recording and `/api/audio/transcribe`
-- [x] Approval prompts, permanent/once/deny choices, cancellation, and errors
-- [x] Keystore-backed credential storage
-- [x] Bounded reconnect and selected-session restoration through process recreation
-- [x] Automated protocol/model/reconnect tests and CI-testable APK
-- [ ] Real-device lifecycle/background soak test
-- [ ] Explicit product approval to make native APK stable and retire Flutter
-
-The unchecked release gates are deliberately required before Flutter retirement, matching Issue #12's non-goals.
+Release APKs are signed with the same 4096-bit RSA key (alias `hermes-chat`) previously used for the Flutter APK. See `native-android/SIGNING.md`.
