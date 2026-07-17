@@ -211,9 +211,7 @@ class TimelineStateTest {
                 "request_id" to JsonPrimitive("r1"),
                 "question" to JsonPrimitive("Pick"),
                 "choices" to
-                    JsonArray(
-                        listOf("a", "b", "c", "d", "e", "f").map { JsonPrimitive(it) }
-                    ),
+                    JsonArray(listOf("a", "b", "c", "d", "e", "f").map { JsonPrimitive(it) }),
             )
         val request = parseClarifyRequest(payload)
         assertNotNull(request)

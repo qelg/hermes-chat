@@ -387,7 +387,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             runCatching {
                     client?.request(
                         "clarify.respond",
-                        mapOf("request_id" to JsonPrimitive(requestId), "answer" to JsonPrimitive(clean)),
+                        mapOf(
+                            "request_id" to JsonPrimitive(requestId),
+                            "answer" to JsonPrimitive(clean),
+                        ),
                     )
                 }
                 .onFailure {
@@ -450,8 +453,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             }
             "clarify.expire" -> {
                 // Server timed out or cancelled the prompt — dismiss the dialog
-                val requestId =
-                    event.payload["request_id"]?.jsonPrimitive?.contentOrNull
+                val requestId = event.payload["request_id"]?.jsonPrimitive?.contentOrNull
                 _state.update { current ->
                     if (requestId == null || current.clarify?.requestId == requestId)
                         current.copy(clarify = null)
