@@ -212,7 +212,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         runtimeId =
                             resumed.string("session_id")
                                 ?: error("Hermes returned no runtime session ID")
-                        val history = api.history(session.id).flatMap(::messagesFromRow)
+                        val history = api.history(session.id).flatMap(::messagesFromHistoryRow)
                         if (selectionVersion != version || client !== api) return@runCatching
                         _state.update {
                             it.copy(
@@ -414,43 +414,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    private fun messagesFromRow(row: JsonObject): List<ChatItem> {
-        val role = row.string("role") ?: "assistant"
-        if (role == "tool")
-            return listOf(
-                ChatItem.Tool(
-                    row.string("tool_call_id"),
-                    row.string("tool_name") ?: row.string("name") ?: "tool",
-                    "completed",
-                    row["content"]?.toString().orEmpty(),
-                )
-            )
-        val raw = row["content"] ?: row["text"]
-        val text =
-            when (raw) {
-                is JsonPrimitive -> raw.contentOrNull.orEmpty()
-                is JsonArray ->
-                    raw.mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("\n")
-                else -> ""
-            }
-        val result = mutableListOf<ChatItem>()
-        if (text.isNotBlank()) result += ChatItem.Message(role, text, row.string("id"))
-        row["tool_calls"]
-            ?.jsonArray
-            ?.mapNotNull { it as? JsonObject }
-            ?.forEach { call ->
-                val function = call["function"] as? JsonObject
-                result +=
-                    ChatItem.Tool(
-                        call.string("id"),
-                        function?.string("name") ?: call.string("name") ?: "tool",
-                        "started",
-                        (function?.get("arguments") ?: call["input"]).toString(),
-                    )
-            }
-        return result
-    }
-
     private fun showError(error: Throwable) =
         _state.update {
             it.copy(connecting = false, error = ErrorMessage(error.message ?: error.toString()))
@@ -460,6 +423,42 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         client?.close()
         super.onCleared()
     }
+}
+
+internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
+    val role = row.string("role") ?: "assistant"
+    if (role == "tool")
+        return listOf(
+            ChatItem.Tool(
+                row.string("tool_call_id"),
+                row.string("tool_name") ?: row.string("name") ?: "tool",
+                "completed",
+                row["content"]?.toString().orEmpty(),
+            )
+        )
+    val raw = row["content"] ?: row["text"]
+    val text =
+        when (raw) {
+            is JsonPrimitive -> raw.contentOrNull.orEmpty()
+            is JsonArray ->
+                raw.mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("\n")
+            else -> ""
+        }
+    val result = mutableListOf<ChatItem>()
+    if (text.isNotBlank()) result += ChatItem.Message(role, text, row.string("id"))
+    (row["tool_calls"] as? JsonArray)
+        ?.mapNotNull { it as? JsonObject }
+        ?.forEach { call ->
+            val function = call["function"] as? JsonObject
+            result +=
+                ChatItem.Tool(
+                    call.string("id"),
+                    function?.string("name") ?: call.string("name") ?: "tool",
+                    "started",
+                    (function?.get("arguments") ?: call["input"]).toString(),
+                )
+        }
+    return result
 }
 
 internal fun reconcileAssistantCompletion(
