@@ -459,7 +459,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 if (name == "clarify" && event.type == "tool.start") {
                     val arguments =
                         listOf("arguments", "args", "input", "request").firstNotNullOfOrNull {
-                            event.payload[it]?.jsonPrimitive?.contentOrNull
+                            event.payload[it]?.displayString()
                         }
                     val parsed = parseClarifyArguments(arguments)
                     _state.update { it.copy(clarify = parsed) }
