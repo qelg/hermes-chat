@@ -6,6 +6,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -163,41 +165,57 @@ class TimelineStateTest {
     }
 
     @Test
-    fun clarifyArgumentsParseQuestionAndChoices() {
-        val request =
-            parseClarifyArguments("""{"question":"Which target?","choices":["staging","prod"]}""")
+    fun clarifyRequestParseQuestionAndChoices() {
+        val payload =
+            mapOf(
+                "request_id" to JsonPrimitive("abc123"),
+                "question" to JsonPrimitive("Which target?"),
+                "choices" to JsonArray(listOf(JsonPrimitive("staging"), JsonPrimitive("prod"))),
+            )
+        val request = parseClarifyRequest(payload)
         assertNotNull(request)
-        assertEquals("Which target?", request!!.question)
+        assertEquals("abc123", request!!.requestId)
+        assertEquals("Which target?", request.question)
         assertEquals(listOf("staging", "prod"), request.choices)
     }
 
     @Test
-    fun clarifyArgumentsWithoutChoicesIsOpenEnded() {
-        val request = parseClarifyArguments("""{"question":"What do you think?"}""")
+    fun clarifyRequestWithoutChoicesIsOpenEnded() {
+        val payload =
+            mapOf(
+                "request_id" to JsonPrimitive("r1"),
+                "question" to JsonPrimitive("What do you think?"),
+            )
+        val request = parseClarifyRequest(payload)
         assertNotNull(request)
         assertEquals("What do you think?", request!!.question)
         assertEquals(emptyList<String>(), request.choices)
     }
 
     @Test
-    fun clarifyArgumentsNullReturnsNull() {
-        assertNull(parseClarifyArguments(null))
+    fun clarifyRequestWithoutRequestIdReturnsNull() {
+        val payload = mapOf("question" to JsonPrimitive("Q?"))
+        assertNull(parseClarifyRequest(payload))
     }
 
     @Test
-    fun clarifyArgumentsInvalidJsonReturnsNull() {
-        assertNull(parseClarifyArguments("not json"))
+    fun clarifyRequestWithoutQuestionReturnsNull() {
+        val payload = mapOf("request_id" to JsonPrimitive("r1"))
+        assertNull(parseClarifyRequest(payload))
     }
 
     @Test
-    fun clarifyArgumentsWithoutQuestionReturnsNull() {
-        assertNull(parseClarifyArguments("""{"choices":["a"]}"""))
-    }
-
-    @Test
-    fun clarifyArgumentsTruncatesExcessChoices() {
-        val request =
-            parseClarifyArguments("""{"question":"Pick","choices":["a","b","c","d","e","f"]}""")
+    fun clarifyRequestTruncatesExcessChoices() {
+        val payload =
+            mapOf(
+                "request_id" to JsonPrimitive("r1"),
+                "question" to JsonPrimitive("Pick"),
+                "choices" to
+                    JsonArray(
+                        listOf("a", "b", "c", "d", "e", "f").map { JsonPrimitive(it) }
+                    ),
+            )
+        val request = parseClarifyRequest(payload)
         assertNotNull(request)
         assertEquals(listOf("a", "b", "c", "d"), request!!.choices)
     }
