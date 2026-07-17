@@ -316,11 +316,7 @@ private fun ChatPane(
         state.approval?.let { approval ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Warning,
-                        null,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.width(8.dp))
                     Text(
                         approval.description,
@@ -331,30 +327,15 @@ private fun ChatPane(
                 if (approval.command.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
                     SelectionContainer {
-                        Text(
-                            approval.command,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        Text(approval.command, style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    AssistChip(
-                        onClick = { vm.approve("once") },
-                        label = { Text("Allow once") },
-                    )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(onClick = { vm.approve("once") }, label = { Text("Allow once") })
                     if (approval.allowPermanent)
-                        AssistChip(
-                            onClick = { vm.approve("always") },
-                            label = { Text("Always") },
-                        )
-                    AssistChip(
-                        onClick = { vm.approve("deny") },
-                        label = { Text("Deny") },
-                    )
+                        AssistChip(onClick = { vm.approve("always") }, label = { Text("Always") })
+                    AssistChip(onClick = { vm.approve("deny") }, label = { Text("Deny") })
                 }
             }
         }
