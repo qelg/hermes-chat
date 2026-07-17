@@ -13,6 +13,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -45,6 +46,7 @@ import org.commonmark.renderer.html.HtmlRenderer
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
@@ -58,8 +60,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun HermesApp(vm: ChatViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
-    if (!state.configured) ConnectionScreen(vm::connect) else MainScreen(state, vm)
+    Box(
+        Modifier.fillMaxSize()
+            .windowInsetsPadding(contentInsets(WindowInsets.safeDrawing, WindowInsets.ime))
+    ) {
+        if (!state.configured) ConnectionScreen(vm::connect) else MainScreen(state, vm)
+    }
 }
+
+internal fun contentInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
+    safeDrawing.union(ime)
 
 @Composable
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
@@ -180,6 +190,7 @@ private fun SessionPane(
     Column(modifier) {
         TopAppBar(
             title = { Text("Sessions") },
+            windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
                 IconButton(vm::refresh) { Icon(Icons.Default.Refresh, "Refresh") }
                 IconButton(vm::disconnect) { Icon(Icons.AutoMirrored.Filled.Logout, "Disconnect") }
@@ -258,6 +269,7 @@ private fun ChatPane(
                 }
             },
             title = { Text(state.title, maxLines = 1) },
+            windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
                 if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
             },
