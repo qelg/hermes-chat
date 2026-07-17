@@ -90,6 +90,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 connecting = true,
                 items = emptyList(),
                 approval = null,
+                clarify = null,
                 active = false,
                 error = null,
             )
@@ -251,6 +252,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             selectedId = stored,
                             title = session.title,
                             items = emptyList(),
+                            approval = null,
+                            clarify = null,
+                            active = false,
                             sessions = listOf(session) + it.sessions,
                         )
                     }
@@ -271,6 +275,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 connecting = true,
                 items = emptyList(),
                 approval = null,
+                clarify = null,
                 active = false,
                 error = null,
             )
@@ -348,7 +353,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val stored = result.string("stored_session_id") ?: runtimeId
         savedState["selectedId"] = stored
         _state.update {
-            it.copy(selectedId = stored, title = "Untitled session", items = emptyList())
+            it.copy(
+                selectedId = stored,
+                title = "Untitled session",
+                items = emptyList(),
+                approval = null,
+                clarify = null,
+                active = false,
+            )
         }
     }
 
