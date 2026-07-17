@@ -39,6 +39,7 @@ data class ChatUiState(
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
     val error: ErrorMessage? = null,
+    val updateState: UpdateState = UpdateState(),
 )
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
@@ -46,6 +47,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private val credentials = SecureCredentials(application)
     private val _state = MutableStateFlow(ChatUiState(selectedId = savedState["selectedId"]))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+    val updateManager = UpdateManager(application)
     private var client: HermesClient? = null
     private var runtimeId: String? = null
     private var connectionJob: Job? = null
@@ -57,6 +59,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     init {
         credentials.load()?.let(::connect)
+        syncUpdateState()
     }
 
     fun connect(config: ConnectionConfig) {
@@ -591,6 +594,20 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 items[items.lastIndex] = last.copy(text = last.text + text)
             else items += ChatItem.Message("assistant", text, timestamp = Instant.now())
             state.copy(items = items)
+        }
+    }
+
+    fun checkForUpdate() = viewModelScope.launch { updateManager.checkForUpdate() }
+
+    fun downloadUpdate() = viewModelScope.launch { updateManager.downloadAndInstall() }
+
+    fun resetUpdateState() {
+        updateManager.reset()
+    }
+
+    private fun syncUpdateState() {
+        viewModelScope.launch {
+            updateManager.state.collect { us -> _state.update { it.copy(updateState = us) } }
         }
     }
 

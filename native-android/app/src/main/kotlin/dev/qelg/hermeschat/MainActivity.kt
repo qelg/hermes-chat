@@ -178,6 +178,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
         )
     }
     state.clarify?.let { clarify -> ClarifyDialog(clarify, onAnswer = { vm.answerClarify(it) }) }
+    UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
 
 @Composable
@@ -195,6 +196,9 @@ private fun SessionPane(
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
                 IconButton(vm::refresh) { Icon(Icons.Default.Refresh, "Refresh") }
+                IconButton(vm::checkForUpdate) {
+                    Icon(Icons.Default.SystemUpdate, "Check for updates")
+                }
                 IconButton(vm::disconnect) { Icon(Icons.AutoMirrored.Filled.Logout, "Disconnect") }
             },
         )
@@ -843,5 +847,74 @@ private fun ClarifyDialog(request: ClarifyRequest, onAnswer: (String) -> Unit) {
         },
         confirmButton = {},
         dismissButton = {},
+    )
+}
+
+@Composable
+private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDismiss: () -> Unit) {
+    if (
+        !updateState.checking &&
+            !updateState.available &&
+            !updateState.downloading &&
+            updateState.error == null
+    )
+        return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            when {
+                updateState.checking || updateState.downloading ->
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                updateState.available -> Icon(Icons.Default.SystemUpdate, null)
+                else -> Icon(Icons.Default.Error, null)
+            }
+        },
+        title = {
+            Text(
+                when {
+                    updateState.checking -> "Checking for updates…"
+                    updateState.downloading -> "Downloading update…"
+                    updateState.available -> "Update available"
+                    updateState.error != null -> "Update check failed"
+                    else -> "Update"
+                }
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when {
+                    updateState.checking -> Text("Connecting to GitHub…")
+                    updateState.downloading -> {
+                        Text("Downloading Hermes Chat ${updateState.latestVersion ?: ""}")
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { updateState.downloadProgress },
+                            Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "${(updateState.downloadProgress * 100).toInt()}%",
+                            Modifier.align(Alignment.CenterHorizontally),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    updateState.available ->
+                        Text(
+                            "A new version is available: ${updateState.latestVersion ?: "latest"}.\n\nYour current version: ${updateState.currentVersion}\n\nDo you want to download and install it?"
+                        )
+                    updateState.error != null -> Text(updateState.error ?: "Unknown error")
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                updateState.available -> Button(onDownload) { Text("Download & Install") }
+                updateState.downloading -> {}
+                else -> TextButton(onDismiss) { Text("Close") }
+            }
+        },
+        dismissButton = {
+            if (updateState.available || updateState.error != null)
+                TextButton(onDismiss) { Text("Cancel") }
+        },
     )
 }
