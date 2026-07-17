@@ -333,8 +333,8 @@ private fun ChatPane(
             }
         }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-            VoiceButton(vm, enabled = !state.transcribing) {
-                input = if (input.isBlank()) it else "$input\n$it"
+            VoiceButton(vm, enabled = !state.transcribing) { text ->
+                vm.send(text)
             }
             OutlinedTextField(
                 input,
