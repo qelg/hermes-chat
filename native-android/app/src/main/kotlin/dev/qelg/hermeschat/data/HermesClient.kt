@@ -263,10 +263,12 @@ class HermesClient(
             ),
         )
 
-    suspend fun history(sessionId: String): List<JsonObject> =
-        (http("GET", "/api/sessions/${sessionId.urlEncode()}/messages")["messages"] as? JsonArray)
+    suspend fun history(sessionId: String): List<JsonObject> {
+        val response = http("GET", "/api/sessions/${sessionId.urlEncode()}/messages")
+        return ((response["messages"] as? JsonArray) ?: (response["data"] as? JsonArray))
             ?.mapNotNull { it as? JsonObject }
             .orEmpty()
+    }
 
     suspend fun transcribe(bytes: ByteArray, mimeType: String): String {
         val data = java.util.Base64.getEncoder().encodeToString(bytes)
