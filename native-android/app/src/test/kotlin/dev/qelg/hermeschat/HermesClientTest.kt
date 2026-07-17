@@ -15,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -156,6 +157,33 @@ class HermesClientTest {
         try {
             assertEquals(emptyList<JsonObject>(), client.history("existing-session"))
             assertEquals("/api/sessions/existing-session/messages", server.takeRequest().path)
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun historyReadsDataFieldWhenMessagesIsAbsent() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","session_id":"s1","data":[{"role":"assistant","content":"Hello","timestamp":"2026-07-17T12:00:00Z"}]}"""
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            val history = client.history("existing-session")
+            assertEquals(1, history.size)
+            assertEquals("assistant", history[0]["role"]?.jsonPrimitive?.contentOrNull)
+            assertEquals("Hello", history[0]["content"]?.jsonPrimitive?.contentOrNull)
         } finally {
             client.close()
             scope.cancel()

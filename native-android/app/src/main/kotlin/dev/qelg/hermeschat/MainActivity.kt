@@ -40,6 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.hermeschat.data.*
 import java.io.File
+import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
 
@@ -654,10 +655,9 @@ private fun toolIcon(name: String) =
 private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     val html =
         remember(markdown) {
-            HtmlRenderer.builder()
-                .escapeHtml(true)
-                .build()
-                .render(Parser.builder().build().parse(markdown))
+            val parser = Parser.builder().extensions(listOf(TablesExtension.create())).build()
+            val raw = HtmlRenderer.builder().escapeHtml(true).build().render(parser.parse(markdown))
+            replaceTablesWithText(raw)
         }
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     AndroidView(
@@ -684,6 +684,34 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
         },
         modifier = modifier,
     )
+}
+
+private fun replaceTablesWithText(html: String): String {
+    val tablePattern = Regex("<table>(.*?)</table>", RegexOption.DOT_MATCHES_ALL)
+    return tablePattern.replace(html) { match ->
+        val body = match.groupValues[1]
+        val rows =
+            Regex("<tr>(.*?)</tr>", RegexOption.DOT_MATCHES_ALL)
+                .findAll(body)
+                .map { rowMatch ->
+                    Regex("<t[hd]>(.*?)</t[hd]>", RegexOption.DOT_MATCHES_ALL)
+                        .findAll(rowMatch.groupValues[1])
+                        .map { it.groupValues[1].replace(Regex("<[^>]+>"), "").trim() }
+                        .toList()
+                }
+                .toList()
+        if (rows.isEmpty() || rows.all { it.isEmpty() }) return@replace ""
+        val colCount = rows.maxOf { it.size }
+        val colWidths =
+            (0 until colCount).map { col -> rows.maxOf { row -> row.getOrElse(col) { "" }.length } }
+        val lines =
+            rows.map { row ->
+                (0 until colCount).joinToString(" | ") { col ->
+                    row.getOrElse(col) { "" }.padEnd(colWidths[col])
+                }
+            }
+        "<pre>" + lines.joinToString("\n") + "</pre>"
+    }
 }
 
 @Composable
