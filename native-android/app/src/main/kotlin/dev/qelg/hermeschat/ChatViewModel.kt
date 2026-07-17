@@ -385,12 +385,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val clean = text.trim()
         if (clean.isEmpty()) return
         val requestId = _state.value.clarify?.requestId ?: return
+        val sessionId = runtimeId
         _state.update { it.copy(clarify = null) }
         viewModelScope.launch {
             runCatching {
                     client?.request(
                         "clarify.respond",
                         mapOf(
+                            "session_id" to JsonPrimitive(sessionId ?: ""),
                             "request_id" to JsonPrimitive(requestId),
                             "answer" to JsonPrimitive(clean),
                         ),
