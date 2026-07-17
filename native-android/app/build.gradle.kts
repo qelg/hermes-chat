@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.diffplug.spotless")
     id("com.android.application")
@@ -15,6 +18,13 @@ spotless {
         target("*.gradle.kts")
         ktfmt("0.54").kotlinlangStyle()
     }
+}
+
+val keyPropertiesFile = rootProject.file("key.properties")
+val keyProperties = Properties()
+
+if (keyPropertiesFile.exists()) {
+    FileInputStream(keyPropertiesFile).use(keyProperties::load)
 }
 
 android {
@@ -36,6 +46,30 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+
+    signingConfigs {
+        if (keyPropertiesFile.exists()) {
+            create("release") {
+                keyAlias = keyProperties["keyAlias"] as String
+                keyPassword = keyProperties["keyPassword"] as String
+                storeFile = file(keyProperties["storeFile"] as String)
+                storePassword = keyProperties["storePassword"] as String
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig =
+                if (keyPropertiesFile.exists()) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+    }
 }
 
 dependencies {
