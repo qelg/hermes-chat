@@ -761,8 +761,13 @@ private fun mergeParallelGroup(
 
 private fun Map<String, JsonElement>.instant(): Instant? =
     listOf("timestamp", "created_at", "updated_at", "time").firstNotNullOfOrNull { key ->
-        this[key]?.jsonPrimitive?.contentOrNull?.let {
-            runCatching { Instant.parse(it) }.getOrNull()
+        this[key]?.jsonPrimitive?.let { prim ->
+            prim.contentOrNull?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                ?: prim.doubleOrNull?.let { Instant.ofEpochMilli((it * 1000).toLong()) }
+                ?: prim.longOrNull?.let {
+                    if (it > 1_000_000_000_000L) Instant.ofEpochMilli(it)
+                    else Instant.ofEpochSecond(it)
+                }
         }
     }
 
