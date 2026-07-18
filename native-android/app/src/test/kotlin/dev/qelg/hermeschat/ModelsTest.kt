@@ -6,14 +6,15 @@ import dev.qelg.hermeschat.data.DraftSubmission
 import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.ModelCatalog
 import dev.qelg.hermeschat.data.ModelSelection
+import dev.qelg.hermeschat.data.ToolValueRow
 import dev.qelg.hermeschat.data.canClearDraft
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import dev.qelg.hermeschat.data.modelSwitchValue
 import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
-import dev.qelg.hermeschat.data.toolArgumentRows
 import dev.qelg.hermeschat.data.toolCountBreakdown
+import dev.qelg.hermeschat.data.toolValueRows
 import dev.qelg.hermeschat.data.updateDrafts
 import dev.qelg.hermeschat.data.upsertTool
 import java.time.Instant
@@ -92,9 +93,11 @@ class ModelsTest {
                 "options: {\"recursive\":true}",
                 "query: first line second line",
             ),
-            toolArgumentRows(
-                """{"path":"/tmp/example","offset":3,"options":{"recursive":true},"query":"first line\nsecond line"}"""
-            ),
+            toolValueRows(
+                    """{"path":"/tmp/example","offset":3,"options":{"recursive":true},"query":"first line\nsecond line"}""",
+                    fallbackName = "arguments",
+                )
+                .map(ToolValueRow::summary),
         )
     }
 
@@ -102,16 +105,50 @@ class ModelsTest {
     fun toolArgumentNamesAndUnicodeLineSeparatorsStayOnOneLine() {
         assertEquals(
             listOf("bad name: value", "unicode name: one two three"),
-            toolArgumentRows(
-                """{"bad\nname":"value","unicode\u2028name":"one\u2029two\u0085three"}"""
-            ),
+            toolValueRows(
+                    """{"bad\nname":"value","unicode\u2028name":"one\u2029two\u0085three"}""",
+                    fallbackName = "arguments",
+                )
+                .map(ToolValueRow::summary),
         )
     }
 
     @Test
     fun unstructuredToolArgumentsUseSingleLineFallback() {
-        assertEquals(listOf("arguments: raw value"), toolArgumentRows("raw\nvalue"))
-        assertEquals(emptyList<String>(), toolArgumentRows("  \n "))
+        assertEquals(
+            listOf("arguments: raw value"),
+            toolValueRows("raw\nvalue", "arguments").map(ToolValueRow::summary),
+        )
+        assertEquals(emptyList<ToolValueRow>(), toolValueRows("  \n ", "arguments"))
+    }
+
+    @Test
+    fun toolValuesKeepFullContentAndExposeCompactSummaries() {
+        val rows =
+            toolValueRows(
+                """{"message":"first\nsecond","payload":{"ok":true}}""",
+                fallbackName = "answer",
+            )
+
+        assertEquals(
+            listOf(
+                ToolValueRow("message", "first\nsecond"),
+                ToolValueRow("payload", "{\"ok\":true}"),
+            ),
+            rows,
+        )
+        assertEquals(
+            listOf("message: first second", "payload: {\"ok\":true}"),
+            rows.map { it.summary },
+        )
+    }
+
+    @Test
+    fun unstructuredToolValueUsesLabelButPreservesDetailContent() {
+        val rows = toolValueRows("line one\nline two", fallbackName = "answer")
+
+        assertEquals(listOf(ToolValueRow("answer", "line one\nline two")), rows)
+        assertEquals("answer: line one line two", rows.single().summary)
     }
 
     @Test

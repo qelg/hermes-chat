@@ -31,6 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -698,9 +700,16 @@ private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
 
 @Composable
 private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
-    var expanded by rememberSaveable(tool.id) { mutableStateOf(false) }
+    var selectedValue by remember(tool.id) { mutableStateOf<String?>(null) }
     var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
-    val argumentRows = remember(tool.arguments) { toolArgumentRows(tool.arguments) }
+    val requestRows = remember(tool.arguments) { toolValueRows(tool.arguments, "arguments") }
+    val answerRows =
+        remember(tool.result, tool.error) {
+            buildList {
+                addAll(toolValueRows(tool.result, "answer"))
+                addAll(toolValueRows(tool.error, "error"))
+            }
+        }
     LaunchedEffect(tool.id, tool.state, tool.startedAt) {
         while (!tool.final && tool.startedAt != null) {
             now = java.time.Instant.now()
@@ -728,36 +737,14 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
             )
         },
         leadingContent = { Icon(toolIcon(tool.name), null) },
-        trailingContent = {
-            Column(horizontalAlignment = Alignment.End) {
-                (tool.startedAt ?: tool.completedAt)?.let { ClockText(it) }
-                if (tool.details.isNotBlank())
-                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
-            }
-        },
+        trailingContent = { (tool.startedAt ?: tool.completedAt)?.let { ClockText(it) } },
         supportingContent = {
-            if (argumentRows.isNotEmpty() || (expanded && tool.details.isNotBlank()))
-                SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        argumentRows.forEach { row ->
-                            Text(
-                                row,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        if (expanded && tool.details.isNotBlank()) {
-                            if (argumentRows.isNotEmpty()) Spacer(Modifier.height(4.dp))
-                            Text(
-                                tool.details,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            )
-                        }
-                    }
+            if (requestRows.isNotEmpty() || answerRows.isNotEmpty())
+                Column {
+                    CompactToolValueRows(requestRows) { selectedValue = it }
+                    if (requestRows.isNotEmpty() && answerRows.isNotEmpty())
+                        Spacer(Modifier.height(6.dp))
+                    CompactToolValueRows(answerRows) { selectedValue = it }
                 }
         },
         colors =
@@ -766,13 +753,64 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
                     if (nested) MaterialTheme.colorScheme.surfaceContainerHigh
                     else Color.Transparent
             ),
-        modifier =
-            Modifier.fillMaxWidth()
-                .then(
-                    if (tool.details.isNotBlank()) Modifier.clickable { expanded = !expanded }
-                    else Modifier
-                ),
+        modifier = Modifier.fillMaxWidth(),
     )
+    selectedValue?.let { value ->
+        ToolValueScreen(value = value, onDismiss = { selectedValue = null })
+    }
+}
+
+@Composable
+private fun CompactToolValueRows(rows: List<ToolValueRow>, onOpen: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        rows.forEach { row ->
+            var truncated by remember(row.summary) { mutableStateOf(false) }
+            Text(
+                row.summary,
+                modifier =
+                    Modifier.fillMaxWidth()
+                        .then(
+                            if (truncated) Modifier.clickable { onOpen(row.value) } else Modifier
+                        ),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { truncated = it.hasVisualOverflow },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolValueScreen(value: String, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties =
+            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                SelectionContainer(Modifier.weight(1f)) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .horizontalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            value,
+                            Modifier.padding(16.dp),
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            softWrap = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun formatElapsed(durationMs: Long): String = "%.1f s".format(durationMs / 1000.0)
