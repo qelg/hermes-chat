@@ -301,13 +301,29 @@ private fun ChatPane(
                 if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
             },
         )
-        state.error?.let {
-            Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                Text(
-                    it.text,
+        state.error?.let { error ->
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ) {
+                Row(
                     Modifier.fillMaxWidth().padding(10.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(error.text)
+                        state.reconnectSeconds?.let { seconds ->
+                            Text(
+                                "Next connection attempt in $seconds s",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                    state.reconnectSeconds?.let {
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = vm::reconnectNow) { Text("Connect now") }
+                    }
+                }
             }
         }
         LazyColumn(
