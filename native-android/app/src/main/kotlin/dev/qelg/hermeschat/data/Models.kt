@@ -44,6 +44,43 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
     }
 }
 
+fun prioritizeSessionsWithDrafts(
+    sessions: List<HermesSession>,
+    drafts: Map<String, String>,
+): List<HermesSession> {
+    val (withDraft, withoutDraft) = sessions.partition { drafts[it.id]?.isNotBlank() == true }
+    return withDraft + withoutDraft
+}
+
+fun updateDrafts(
+    drafts: Map<String, String>,
+    sessionId: String,
+    text: String,
+): Map<String, String> =
+    drafts.toMutableMap().apply {
+        if (text.isBlank()) remove(sessionId) else this[sessionId] = text
+    }
+
+data class DraftSubmission(
+    val namespace: String,
+    val connectionVersion: Long,
+    val sessionId: String,
+    val revision: Long,
+    val text: String,
+)
+
+fun canClearDraft(
+    submitted: DraftSubmission,
+    currentNamespace: String,
+    currentConnectionVersion: Long,
+    currentRevision: Long,
+    currentText: String?,
+): Boolean =
+    submitted.namespace == currentNamespace &&
+        submitted.connectionVersion == currentConnectionVersion &&
+        submitted.revision == currentRevision &&
+        submitted.text == currentText
+
 data class ModelSelection(val provider: String, val model: String)
 
 data class ModelOption(val id: String, val unavailable: Boolean = false)
