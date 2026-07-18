@@ -1,6 +1,7 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ChatItem
+import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -11,8 +12,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class TimelineStateTest {
@@ -33,7 +36,7 @@ class TimelineStateTest {
     fun completionReconcilesDroppedDeltasWithCanonicalFinalText() {
         val partial = listOf<ChatItem>(ChatItem.Message("assistant", "Hel"))
         assertEquals(
-            listOf<ChatItem>(ChatItem.Message("assistant", "Hello")),
+            listOf<ChatItem>(ChatItem.Message("assistant", "Hello", pendingCanonical = true)),
             reconcileAssistantCompletion(partial, "Hello"),
         )
     }
@@ -60,6 +63,106 @@ class TimelineStateTest {
         val history = listOf<ChatItem>(ChatItem.Message("assistant", "Done", "m1"))
         val liveCompletion = listOf<ChatItem>(ChatItem.Message("assistant", "Done"))
         assertEquals(history, mergeHistoryAndLive(history, liveCompletion))
+    }
+
+    @Test
+    fun canonicalReplacementKeepsLiveComposeKey() {
+        val live = ChatItem.Message("assistant", "Streaming text", id = "m7", uiKey = "live:7")
+        val canonical = ChatItem.Message("assistant", "Canonical text", id = "m7")
+        assertEquals(
+            listOf(canonical.copy(uiKey = "live:7")),
+            mergeHistoryAndLive(listOf(canonical), listOf(live)),
+        )
+    }
+
+    @Test
+    fun staleHistoryKeepsTheEntireUnpersistedLiveTurn() {
+        val oldUser = ChatItem.Message("user", "Old question", id = "u1")
+        val oldAssistant = ChatItem.Message("assistant", "Old answer", id = "a1")
+        val newUser = ChatItem.Message("user", "New question", uiKey = "live:1")
+        val newAssistant = ChatItem.Message("assistant", "Streaming", uiKey = "live:2")
+        val staleHistory = listOf<ChatItem>(oldUser, oldAssistant)
+        assertEquals(
+            staleHistory + listOf(newUser, newAssistant),
+            mergeHistoryAndLive(staleHistory, staleHistory + listOf(newUser, newAssistant)),
+        )
+    }
+
+    @Test
+    fun authoritativeHistoryRemovesRowsThatPredateTheRequest() {
+        val kept = ChatItem.Message("user", "Keep", id = "u1")
+        val rewound = ChatItem.Message("assistant", "Remove", id = "a1")
+        val baseline = listOf<ChatItem>(kept, rewound)
+        assertEquals(listOf(kept), reconcileHistoryItems(listOf(kept), baseline, baseline))
+    }
+
+    @Test
+    fun eventsReceivedAfterHistoryRequestRemainVisible() {
+        val persisted = ChatItem.Message("user", "Question", id = "u1")
+        val baseline = listOf<ChatItem>(persisted)
+        val arrivedLater = ChatItem.Message("assistant", "Streaming", uiKey = "live:2")
+        assertEquals(
+            baseline + arrivedLater,
+            reconcileHistoryItems(baseline, baseline + arrivedLater, baseline),
+        )
+    }
+
+    @Test
+    fun pendingLiveMessageSurvivesHistoryPersistenceDelay() {
+        val pending =
+            ChatItem.Message(
+                "assistant",
+                "Completed live",
+                uiKey = "live:3",
+                pendingCanonical = true,
+            )
+        assertEquals(
+            listOf(pending),
+            reconcileHistoryItems(emptyList(), listOf(pending), listOf(pending)),
+        )
+    }
+
+    @Test
+    fun unchangedHistoryReconciliationReturnsOriginalListInstance() {
+        val current = listOf<ChatItem>(ChatItem.Message("assistant", "Done", id = "m1"))
+        assertSame(current, reconcileHistoryItems(current.toList(), current))
+    }
+
+    @Test
+    fun unreadCountersIncrementAndClearWithoutChangingUnrelatedChats() {
+        val unread = addUnread(addUnread(mapOf("chat-a" to 1), "chat-b"), "chat-b")
+        assertEquals(mapOf("chat-a" to 1, "chat-b" to 2), unread)
+        assertEquals(mapOf("chat-b" to 2), clearUnread(unread, "chat-a"))
+        assertSame(unread, clearUnread(unread, "missing"))
+    }
+
+    @Test
+    fun runtimeUnreadCountIsRemappedWhenSessionListRefreshes() {
+        val sessions = listOf(HermesSession("stored-1", "Chat", runtimeId = "runtime-1"))
+        assertEquals(mapOf("stored-1" to 2), remapUnread(mapOf("runtime-1" to 2), sessions))
+    }
+
+    @Test
+    fun rememberedRuntimeSessionRoutesUnreadToStoredChat() {
+        assertEquals(
+            "stored-1",
+            resolveStoredSessionId("runtime-1", mapOf("runtime-1" to "stored-1"), emptyList()),
+        )
+    }
+
+    @Test
+    fun timelineKeySurvivesStreamingToCanonicalReplacement() {
+        val live = ChatItem.Message("assistant", "Done", uiKey = "live:9")
+        val canonical = ChatItem.Message("assistant", "Done", id = "m9")
+        val reconciled = mergeHistoryAndLive(listOf(canonical), listOf(live)).single()
+        assertEquals(timelineKey(0, live), timelineKey(0, reconciled))
+    }
+
+    @Test
+    fun liveAndServerMessageKeyNamespacesCannotCollide() {
+        val live = ChatItem.Message("assistant", "Live", uiKey = "same")
+        val persisted = ChatItem.Message("assistant", "Stored", id = "same")
+        assertNotEquals(timelineKey(0, live), timelineKey(0, persisted))
     }
 
     @Test

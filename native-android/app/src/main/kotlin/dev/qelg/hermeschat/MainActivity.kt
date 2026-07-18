@@ -41,6 +41,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.hermeschat.data.*
 import java.io.File
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
@@ -232,6 +234,7 @@ private fun SessionPane(
         LazyColumn(Modifier.weight(1f)) {
             items(sessions, key = { it.id }) { session ->
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
+                val unread = state.unreadCounts[session.id] ?: 0
                 ListItem(
                     headlineContent = { Text(session.title, maxLines = 1) },
                     supportingContent = {
@@ -252,7 +255,12 @@ private fun SessionPane(
                                 null,
                             )
                     },
-                    trailingContent = { if (draft != null) Badge { Text("DRAFT") } },
+                    trailingContent = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (draft != null) Badge { Text("DRAFT") }
+                            if (unread > 0) Badge { Text(unread.toString()) }
+                        }
+                    },
                     modifier =
                         Modifier.clickable {
                             vm.select(session)
@@ -282,8 +290,30 @@ private fun ChatPane(
     var showModels by rememberSaveable { mutableStateOf(false) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
-    LaunchedEffect(blocks.size, (blocks.lastOrNull() as? ChatItem.Message)?.text) {
-        if (blocks.isNotEmpty()) list.animateScrollToItem(blocks.lastIndex)
+    val scope = rememberCoroutineScope()
+    val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
+    var followLatest by remember(state.selectedId) { mutableStateOf(true) }
+    LaunchedEffect(list, state.selectedId) {
+        snapshotFlow { list.isScrollInProgress to !list.canScrollForward }
+            .distinctUntilChanged()
+            .collect { (scrolling, atBottom) ->
+                if (scrolling || atBottom) followLatest = atBottom
+                if (atBottom) state.selectedId?.let(vm::markRead)
+            }
+    }
+    LaunchedEffect(
+        blocks.size,
+        (blocks.lastOrNull() as? ChatItem.Message)?.text,
+        state.active,
+        state.selectedId,
+    ) {
+        if (followLatest && (blocks.isNotEmpty() || state.active)) {
+            list.scrollToItem((blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0))
+            state.selectedId?.let(vm::markRead)
+        }
+    }
+    LaunchedEffect(unread, followLatest, state.selectedId) {
+        if (unread > 0 && followLatest) state.selectedId?.let(vm::markRead)
     }
     Column(modifier) {
         TopAppBar(
@@ -344,21 +374,38 @@ private fun ChatPane(
                 }
             }
         }
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            state = list,
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            itemsIndexed(blocks) { _, item -> TimelineItem(item) }
-            if (state.active)
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Hermes is working…")
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = list,
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                itemsIndexed(blocks, key = ::timelineKey) { _, item -> TimelineItem(item) }
+                if (state.active)
+                    item(key = "working") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Hermes is working…")
+                        }
                     }
-                }
+            }
+            if (unread > 0 && !followLatest)
+                AssistChip(
+                    onClick = {
+                        followLatest = true
+                        scope.launch {
+                            list.animateScrollToItem(
+                                (blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0)
+                            )
+                            state.selectedId?.let(vm::markRead)
+                        }
+                    },
+                    label = { Text("$unread new ${if (unread == 1) "message" else "messages"}") },
+                    leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                )
         }
         HorizontalDivider()
         if (state.transcribing) {
@@ -434,6 +481,28 @@ private fun ChatPane(
         )
     }
 }
+
+internal data class TimelineKey(val kind: String, val identity: Any?)
+
+internal fun timelineKey(index: Int, item: ChatItem): TimelineKey =
+    when (item) {
+        is ChatItem.Message ->
+            when {
+                item.uiKey != null -> TimelineKey("message-live", item.uiKey)
+                item.id != null -> TimelineKey("message-id", item.id)
+                else -> TimelineKey("message-fallback", listOf(item.role, item.timestamp, index))
+            }
+        is ChatItem.Tool ->
+            if (item.id != null) TimelineKey("tool-id", item.id)
+            else TimelineKey("tool-fallback", listOf(item.name, item.startedAt, index))
+        is ChatItem.ParallelToolGroup -> TimelineKey("parallel", item.id)
+        is ChatItem.ToolGroup ->
+            TimelineKey(
+                "tool-group",
+                item.operations.mapIndexed { child, operation -> timelineKey(child, operation) },
+            )
+        is ChatItem.Status -> TimelineKey("status", listOf(item.timestamp, item.text, index))
+    }
 
 @Composable
 private fun ModelPickerDialog(

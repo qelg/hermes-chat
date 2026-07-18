@@ -15,6 +15,7 @@ data class HermesSession(
     val source: String? = null,
     val preview: String? = null,
     val active: Boolean = false,
+    val runtimeId: String? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HermesSession {
@@ -31,6 +32,12 @@ data class HermesSession(
                 active =
                     value["active"]?.jsonPrimitive?.booleanOrNull == true ||
                         value.string("status") in setOf("active", "running", "streaming"),
+                runtimeId =
+                    value.string("runtime_session_id")
+                        ?: value.string("runtime_id")
+                        ?: value.string("session_id")?.takeIf {
+                            value.string("id") != null && it != id
+                        },
             )
         }
     }
@@ -153,6 +160,8 @@ sealed interface ChatItem {
         val text: String,
         val id: String? = null,
         val timestamp: java.time.Instant? = null,
+        val uiKey: String? = null,
+        val pendingCanonical: Boolean = false,
     ) : ChatItem
 
     data class Tool(
