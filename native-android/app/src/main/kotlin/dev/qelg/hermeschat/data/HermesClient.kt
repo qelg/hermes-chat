@@ -10,7 +10,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
@@ -57,6 +56,7 @@ class HermesClient(
     private val ids = AtomicLong()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
     private val reconnect = ReconnectPolicy()
+    private val reconnectWait = ReconnectWait()
     private val eventChannel = Channel<GatewayEvent>(Channel.UNLIMITED)
     val events: Flow<GatewayEvent> = eventChannel.receiveAsFlow()
     private val stateLock = Any()
@@ -216,7 +216,17 @@ class HermesClient(
                     )
                 )
                 while (isActive && !closed) {
-                    delay(reconnect.nextDelayMillis())
+                    reconnectWait.await(reconnect.nextDelayMillis()) { seconds ->
+                        eventChannel.send(
+                            GatewayEvent(
+                                "connection.retry_scheduled",
+                                null,
+                                mapOf("seconds" to JsonPrimitive(seconds)),
+                            )
+                        )
+                    }
+                    if (!isActive || closed) break
+                    eventChannel.send(GatewayEvent("connection.retry_started", null, emptyMap()))
                     val result = runCatching { connect() }
                     if (result.isSuccess) {
                         eventChannel.send(GatewayEvent("connection.restored", null, emptyMap()))
@@ -224,6 +234,10 @@ class HermesClient(
                     }
                 }
             }
+    }
+
+    fun reconnectNow() {
+        reconnectWait.connectNow()
     }
 
     suspend fun request(method: String, params: Map<String, JsonElement> = emptyMap()): JsonObject {

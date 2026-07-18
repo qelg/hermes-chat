@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -226,6 +228,55 @@ class HermesClientTest {
                 events.map { it.payload["text"]?.toString()?.trim('"') },
             )
         } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun connectNowInterruptsBackoffAndRestoresConnection() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            webSocket.close(1012, "restart")
+                        }
+                    }
+                )
+        )
+        server.enqueue(
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
+                    }
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        val events = Channel<dev.qelg.hermeschat.data.GatewayEvent>(Channel.UNLIMITED)
+        val collector = scope.launch { client.events.collect { events.send(it) } }
+        try {
+            client.connect()
+            assertEquals("connection.lost", withTimeout(5_000) { events.receive() }.type)
+            val scheduled = withTimeout(5_000) { events.receive() }
+            assertEquals("connection.retry_scheduled", scheduled.type)
+            assertEquals("1", scheduled.payload["seconds"]?.jsonPrimitive?.content)
+
+            client.reconnectNow()
+
+            assertEquals("connection.retry_started", withTimeout(5_000) { events.receive() }.type)
+            assertEquals("connection.restored", withTimeout(5_000) { events.receive() }.type)
+            assertEquals(2, server.requestCount)
+        } finally {
+            collector.cancel()
             client.close()
             scope.cancel()
             server.shutdown()

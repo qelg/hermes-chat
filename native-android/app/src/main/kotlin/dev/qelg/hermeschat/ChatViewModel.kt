@@ -39,6 +39,7 @@ data class ChatUiState(
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
     val error: ErrorMessage? = null,
+    val reconnectSeconds: Int? = null,
     val updateState: UpdateState = UpdateState(),
 )
 
@@ -93,6 +94,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 clarify = null,
                 active = false,
                 error = null,
+                reconnectSeconds = null,
             )
         }
         eventJob =
@@ -303,6 +305,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 clarify = null,
                 active = false,
                 error = null,
+                reconnectSeconds = null,
             )
         }
         selectionJob =
@@ -466,6 +469,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     fun reportError(error: Throwable) = showError(error)
 
+    fun reconnectNow() {
+        _state.update { it.copy(reconnectSeconds = null) }
+        client?.reconnectNow()
+    }
+
     private fun handleEvent(event: GatewayEvent) {
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
@@ -606,10 +614,21 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     it.copy(
                         connecting = true,
                         error = ErrorMessage("Connection lost; reconnecting…"),
+                        reconnectSeconds = null,
                     )
                 }
+            "connection.retry_scheduled" ->
+                _state.update {
+                    it.copy(
+                        connecting = true,
+                        reconnectSeconds =
+                            event.payload["seconds"]?.jsonPrimitive?.intOrNull?.coerceAtLeast(0),
+                    )
+                }
+            "connection.retry_started" ->
+                _state.update { it.copy(connecting = true, reconnectSeconds = null) }
             "connection.restored" -> {
-                _state.update { it.copy(connecting = false, error = null) }
+                _state.update { it.copy(connecting = false, error = null, reconnectSeconds = null) }
                 refresh()
                 state.value.selectedId?.let { id ->
                     state.value.sessions.firstOrNull { it.id == id }?.let(::select)
@@ -653,7 +672,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     private fun showError(error: Throwable) =
         _state.update {
-            it.copy(connecting = false, error = ErrorMessage(error.message ?: error.toString()))
+            it.copy(
+                connecting = false,
+                error = ErrorMessage(error.message ?: error.toString()),
+                reconnectSeconds = null,
+            )
         }
 
     override fun onCleared() {
