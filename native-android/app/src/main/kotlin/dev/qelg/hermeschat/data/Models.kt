@@ -214,6 +214,22 @@ private fun toolCallCount(item: ChatItem): Int =
         else -> 0
     }
 
+fun toolArgumentRows(arguments: String?): List<String> {
+    val raw = arguments?.takeIf(String::isNotBlank) ?: return emptyList()
+    val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrNull()
+    if (parsed is JsonObject)
+        return parsed.map { (name, value) -> "${name.singleLine()}: ${value.toolArgumentValue()}" }
+    return listOf("arguments: ${raw.singleLine()}")
+}
+
+private fun JsonElement.toolArgumentValue(): String =
+    when (this) {
+        is JsonPrimitive -> content
+        else -> toString()
+    }.singleLine()
+
+private fun String.singleLine(): String = replace(Regex("\\R+"), " ").trim()
+
 private fun isCompletedOperation(item: ChatItem): Boolean =
     when (item) {
         is ChatItem.Tool -> item.final

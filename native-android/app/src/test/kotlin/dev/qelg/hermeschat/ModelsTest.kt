@@ -12,6 +12,7 @@ import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import dev.qelg.hermeschat.data.modelSwitchValue
 import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
+import dev.qelg.hermeschat.data.toolArgumentRows
 import dev.qelg.hermeschat.data.toolCountBreakdown
 import dev.qelg.hermeschat.data.updateDrafts
 import dev.qelg.hermeschat.data.upsertTool
@@ -80,6 +81,37 @@ class ModelsTest {
         assertTrue(!canClearDraft(submitted, "server-a", 7, 5, "hello"))
         assertTrue(!canClearDraft(submitted, "server-b", 7, 3, "hello"))
         assertTrue(!canClearDraft(submitted, "server-a", 8, 3, "hello"))
+    }
+
+    @Test
+    fun toolArgumentsBecomeOneCompactRowPerTopLevelArgument() {
+        assertEquals(
+            listOf(
+                "path: /tmp/example",
+                "offset: 3",
+                "options: {\"recursive\":true}",
+                "query: first line second line",
+            ),
+            toolArgumentRows(
+                """{"path":"/tmp/example","offset":3,"options":{"recursive":true},"query":"first line\nsecond line"}"""
+            ),
+        )
+    }
+
+    @Test
+    fun toolArgumentNamesAndUnicodeLineSeparatorsStayOnOneLine() {
+        assertEquals(
+            listOf("bad name: value", "unicode name: one two three"),
+            toolArgumentRows(
+                """{"bad\nname":"value","unicode\u2028name":"one\u2029two\u0085three"}"""
+            ),
+        )
+    }
+
+    @Test
+    fun unstructuredToolArgumentsUseSingleLineFallback() {
+        assertEquals(listOf("arguments: raw value"), toolArgumentRows("raw\nvalue"))
+        assertEquals(emptyList<String>(), toolArgumentRows("  \n "))
     }
 
     @Test

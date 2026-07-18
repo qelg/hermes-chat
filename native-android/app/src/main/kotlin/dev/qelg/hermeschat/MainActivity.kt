@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -700,6 +701,7 @@ private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
 private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
     var expanded by rememberSaveable(tool.id) { mutableStateOf(false) }
     var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
+    val argumentRows = remember(tool.arguments) { toolArgumentRows(tool.arguments) }
     LaunchedEffect(tool.id, tool.state, tool.startedAt) {
         while (!tool.final && tool.startedAt != null) {
             now = java.time.Instant.now()
@@ -735,12 +737,28 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
             }
         },
         supportingContent = {
-            if (expanded && tool.details.isNotBlank())
+            if (argumentRows.isNotEmpty() || (expanded && tool.details.isNotBlank()))
                 SelectionContainer {
-                    Text(
-                        tool.details,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        argumentRows.forEach { row ->
+                            Text(
+                                row,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (expanded && tool.details.isNotBlank()) {
+                            if (argumentRows.isNotEmpty()) Spacer(Modifier.height(4.dp))
+                            Text(
+                                tool.details,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            )
+                        }
+                    }
                 }
         },
         colors =
