@@ -25,7 +25,9 @@ data class HermesSession(
                 title = value.string("title")?.takeIf(String::isNotBlank) ?: "Untitled session",
                 updatedAt =
                     value.string("updated_at")
+                        ?: value.string("last_active")
                         ?: value.string("last_active_at")
+                        ?: value.string("started_at")
                         ?: value.string("created_at"),
                 source = value.string("source"),
                 preview = value.string("preview"),
