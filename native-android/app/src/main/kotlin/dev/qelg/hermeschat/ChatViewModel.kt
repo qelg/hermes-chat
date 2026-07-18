@@ -31,6 +31,7 @@ data class ChatUiState(
     val search: String = "",
     val selectedId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
+    val unreadCounts: Map<String, Int> = emptyMap(),
     val title: String = "Hermes Chat",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
@@ -61,6 +62,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var refreshJob: Job? = null
     private var connectionVersion = 0L
     private var selectionVersion = 0L
+    private var historyRequestVersion = 0L
+    private var liveMessageSequence = 0L
+    private val runtimeToStored = mutableMapOf<String, String>()
 
     init {
         credentials.load()?.let(::connect)
@@ -88,6 +92,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         refreshJob?.cancel()
         client?.close()
         runtimeId = null
+        runtimeToStored.clear()
         val version = ++connectionVersion
         val next = HermesClient(config, viewModelScope)
         client = next
@@ -143,6 +148,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionVersion++
         client?.close()
         client = null
+        runtimeToStored.clear()
         credentials.clear()
         runtimeId = null
         savedState["selectedId"] = null
@@ -196,7 +202,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 ?.jsonArray
                 ?.mapNotNull { (it as? JsonObject)?.let(HermesSession::fromJson) }
                 .orEmpty()
-        _state.update { it.copy(sessions = sessions, connecting = false) }
+        _state.update {
+            it.copy(
+                sessions = sessions,
+                unreadCounts = remapUnread(it.unreadCounts, sessions),
+                connecting = false,
+            )
+        }
     }
 
     private suspend fun refreshModels(api: HermesClient, sessionId: String?, version: Long) {
@@ -288,13 +300,31 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val api = client ?: return
         val storedId = state.value.selectedId ?: return
         val version = selectionVersion
+        val requestVersion = ++historyRequestVersion
+        val baseline = state.value.items
         viewModelScope.launch {
             runCatching {
                     val history = messagesFromHistoryRows(api.history(storedId))
-                    if (selectionVersion != version || client !== api) return@runCatching
-                    _state.update { it.copy(items = mergeHistoryAndLive(history, it.items)) }
+                    if (
+                        selectionVersion != version ||
+                            historyRequestVersion != requestVersion ||
+                            client !== api
+                    )
+                        return@runCatching
+                    _state.update {
+                        val items = reconcileHistoryItems(history, it.items, baseline)
+                        if (items === it.items) it.copy(connecting = false)
+                        else it.copy(items = items, connecting = false)
+                    }
                 }
-                .onFailure { /* silent — best-effort refresh */ }
+                .onFailure {
+                    if (
+                        selectionVersion == version &&
+                            historyRequestVersion == requestVersion &&
+                            client === api
+                    )
+                        _state.update { it.copy(connecting = false) }
+                }
         }
     }
 
@@ -316,6 +346,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     runtimeId =
                         result.string("session_id") ?: error("Hermes returned no session ID")
                     val stored = result.string("stored_session_id") ?: runtimeId!!
+                    runtimeToStored[runtimeId!!] = stored
                     val session = HermesSession(stored, "Untitled session", source = "mobile")
                     savedState["selectedId"] = stored
                     _state.update {
@@ -340,11 +371,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeId = null
         savedState["selectedId"] = session.id
         _state.update {
+            val keepTimeline = it.selectedId == session.id
             it.copy(
                 selectedId = session.id,
                 title = session.title,
                 connecting = true,
-                items = emptyList(),
+                items = if (keepTimeline) it.items else emptyList(),
                 approval = null,
                 clarify = null,
                 active = false,
@@ -369,13 +401,20 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             resumed.string("session_id")
                                 ?: error("Hermes returned no runtime session ID")
                         runtimeId = resumedRuntimeId
+                        runtimeToStored[resumedRuntimeId] = session.id
+                        val baseline = state.value.items
+                        val historyVersion = ++historyRequestVersion
                         val history = messagesFromHistoryRows(api.history(session.id))
-                        if (selectionVersion != version || client !== api) return@runCatching
+                        if (
+                            selectionVersion != version ||
+                                historyRequestVersion != historyVersion ||
+                                client !== api
+                        )
+                            return@runCatching
                         _state.update {
-                            it.copy(
-                                items = mergeHistoryAndLive(history, it.items),
-                                connecting = false,
-                            )
+                            val items = reconcileHistoryItems(history, it.items, baseline)
+                            if (items === it.items) it.copy(connecting = false)
+                            else it.copy(items = items, connecting = false)
                         }
                         refreshModels(api, resumedRuntimeId, connectionVersion)
                     }
@@ -393,7 +432,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             val id = runtimeId ?: return@launch
             _state.update {
                 it.copy(
-                    items = it.items + ChatItem.Message("user", clean, timestamp = Instant.now()),
+                    items =
+                        it.items +
+                            ChatItem.Message(
+                                "user",
+                                clean,
+                                timestamp = Instant.now(),
+                                uiKey = "live:${++liveMessageSequence}",
+                                pendingCanonical = true,
+                            ),
                     active = true,
                     error = null,
                 )
@@ -426,6 +473,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val result = client?.request("session.create", params) ?: return
         runtimeId = result.string("session_id")
         val stored = result.string("stored_session_id") ?: runtimeId
+        if (runtimeId != null && stored != null) runtimeToStored[runtimeId!!] = stored
         savedState["selectedId"] = stored
         _state.update {
             it.copy(
@@ -534,6 +582,28 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         client?.reconnectNow()
     }
 
+    fun markRead(sessionId: String) {
+        _state.update {
+            val unread = clearUnread(it.unreadCounts, sessionId)
+            if (unread === it.unreadCounts) it else it.copy(unreadCounts = unread)
+        }
+    }
+
+    private fun incrementUnread(sessionId: String?) {
+        if (sessionId == null) return
+        _state.update { it.copy(unreadCounts = addUnread(it.unreadCounts, sessionId)) }
+    }
+
+    private fun storedSessionId(event: GatewayEvent): String? {
+        val explicit =
+            listOf("stored_session_id", "stored_id").firstNotNullOfOrNull {
+                event.payload[it]?.jsonPrimitive?.contentOrNull
+            }
+        if (explicit != null) return explicit
+        val eventId = event.sessionId ?: return null
+        return resolveStoredSessionId(eventId, runtimeToStored, state.value.sessions)
+    }
+
     private fun handleEvent(event: GatewayEvent) {
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
@@ -542,6 +612,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     setOf("session.active", "session.inactive", "message.delta", "message.complete")
             )
                 scheduleRefresh()
+            if (event.type == "message.complete") incrementUnread(storedSessionId(event))
             return
         }
         when (event.type) {
@@ -579,12 +650,24 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         ?.contentOrNull
                         .orEmpty()
                 val timestamp = event.payload.instant()
+                val messageId =
+                    listOf("message_id", "id").firstNotNullOfOrNull {
+                        event.payload[it]?.jsonPrimitive?.contentOrNull
+                    }
                 _state.update {
                     it.copy(
-                        items = reconcileAssistantCompletion(it.items, text, timestamp),
+                        items =
+                            reconcileAssistantCompletion(
+                                it.items,
+                                text,
+                                timestamp,
+                                "live:${++liveMessageSequence}",
+                                messageId,
+                            ),
                         active = false,
                     )
                 }
+                incrementUnread(state.value.selectedId)
                 scheduleRefresh()
                 reloadHistory()
             }
@@ -711,7 +794,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             val last = items.lastOrNull()
             if (last is ChatItem.Message && last.role == "assistant")
                 items[items.lastIndex] = last.copy(text = last.text + text)
-            else items += ChatItem.Message("assistant", text, timestamp = Instant.now())
+            else
+                items +=
+                    ChatItem.Message(
+                        "assistant",
+                        text,
+                        timestamp = Instant.now(),
+                        uiKey = "live:${++liveMessageSequence}",
+                        pendingCanonical = true,
+                    )
             state.copy(items = items)
         }
     }
@@ -844,13 +935,30 @@ internal fun reconcileAssistantCompletion(
     items: List<ChatItem>,
     finalText: String,
     timestamp: Instant? = null,
+    uiKey: String? = null,
+    id: String? = null,
 ): List<ChatItem> {
     if (finalText.isBlank()) return items
     val index = items.indexOfLast { it is ChatItem.Message && it.role == "assistant" }
-    if (index == -1) return items + ChatItem.Message("assistant", finalText, timestamp = timestamp)
+    if (index == -1)
+        return items +
+            ChatItem.Message(
+                "assistant",
+                finalText,
+                id = id,
+                timestamp = timestamp,
+                uiKey = uiKey,
+                pendingCanonical = true,
+            )
     return items.toMutableList().apply {
         val current = this[index] as ChatItem.Message
-        this[index] = current.copy(text = finalText, timestamp = timestamp ?: current.timestamp)
+        this[index] =
+            current.copy(
+                text = finalText,
+                id = id ?: current.id,
+                timestamp = timestamp ?: current.timestamp,
+                pendingCanonical = true,
+            )
     }
 }
 
@@ -861,28 +969,105 @@ private fun ChatItem.toolIds(): Set<String> =
         else -> emptySet()
     }
 
-internal fun mergeHistoryAndLive(history: List<ChatItem>, live: List<ChatItem>): List<ChatItem> {
-    val messageIds = history.mapNotNull { (it as? ChatItem.Message)?.id }.toMutableSet()
-    val historyTail = history.lastOrNull()
-    var result = history
-    live.forEach { item ->
-        when (item) {
-            is ChatItem.Message -> {
-                val shouldAdd =
-                    if (item.id != null) messageIds.add(item.id)
-                    else
-                        historyTail !is ChatItem.Message ||
-                            historyTail.role != item.role ||
-                            historyTail.text != item.text
-                if (shouldAdd) result += item
+private fun ChatItem.reconciliationKey(): String? =
+    when (this) {
+        is ChatItem.Message -> id?.let { "message:$it" } ?: uiKey?.let { "live-message:$it" }
+        is ChatItem.Tool -> id?.let { "tool:$it" }
+        is ChatItem.ParallelToolGroup -> "parallel:$id"
+        is ChatItem.Status -> "status:$timestamp:$text"
+        is ChatItem.ToolGroup -> null
+    }
+
+private fun changedSinceBaseline(item: ChatItem, index: Int, baseline: List<ChatItem>): Boolean {
+    if (baseline.isEmpty()) return true
+    val key = item.reconciliationKey()
+    val previous =
+        if (key != null) baseline.firstOrNull { it.reconciliationKey() == key }
+        else baseline.getOrNull(index)?.takeIf { it::class == item::class }
+    return previous == null || previous != item
+}
+
+internal fun mergeHistoryAndLive(
+    history: List<ChatItem>,
+    live: List<ChatItem>,
+    baseline: List<ChatItem> = emptyList(),
+): List<ChatItem> {
+    val usedLiveMessages = mutableSetOf<Int>()
+    val lastHistoryExactMessage =
+        history.indices
+            .filter { history[it] is ChatItem.Message }
+            .associateBy {
+                val message = history[it] as ChatItem.Message
+                message.role to message.text
             }
-            is ChatItem.Tool -> result = upsertTool(result, item)
-            is ChatItem.ParallelToolGroup -> result = mergeParallelGroup(result, item)
-            else -> result += item
+    val canonical =
+        history.mapIndexed { historyIndex, item ->
+            if (item !is ChatItem.Message) return@mapIndexed item
+            val match =
+                live.indices.firstOrNull { index ->
+                    if (index in usedLiveMessages) return@firstOrNull false
+                    val candidate = live[index] as? ChatItem.Message ?: return@firstOrNull false
+                    (item.id != null && candidate.id == item.id) ||
+                        (candidate.id == null &&
+                            candidate.role == item.role &&
+                            candidate.text == item.text &&
+                            historyIndex == lastHistoryExactMessage[item.role to item.text])
+                }
+            if (match == null) item
+            else {
+                usedLiveMessages += match
+                val candidate = live[match] as ChatItem.Message
+                item.copy(uiKey = candidate.uiKey ?: item.uiKey, pendingCanonical = false)
+            }
+        }
+    var result = canonical
+    live.forEachIndexed { index, item ->
+        val changed = changedSinceBaseline(item, index, baseline)
+        when (item) {
+            is ChatItem.Message ->
+                if (index !in usedLiveMessages && (item.pendingCanonical || changed)) result += item
+            is ChatItem.Tool -> if (changed) result = upsertTool(result, item)
+            is ChatItem.ParallelToolGroup -> if (changed) result = mergeParallelGroup(result, item)
+            else -> if (changed) result += item
         }
     }
     return result
 }
+
+internal fun reconcileHistoryItems(
+    history: List<ChatItem>,
+    live: List<ChatItem>,
+    baseline: List<ChatItem> = emptyList(),
+): List<ChatItem> {
+    val merged = mergeHistoryAndLive(history, live, baseline)
+    return if (merged == live) live else merged
+}
+
+internal fun addUnread(unread: Map<String, Int>, sessionId: String): Map<String, Int> =
+    unread + (sessionId to ((unread[sessionId] ?: 0) + 1))
+
+internal fun clearUnread(unread: Map<String, Int>, sessionId: String): Map<String, Int> {
+    if (sessionId !in unread) return unread
+    return unread - sessionId
+}
+
+internal fun resolveStoredSessionId(
+    eventId: String,
+    runtimeToStored: Map<String, String>,
+    sessions: List<HermesSession>,
+): String =
+    runtimeToStored[eventId]
+        ?: sessions.firstOrNull { it.id == eventId || it.runtimeId == eventId }?.id
+        ?: eventId
+
+internal fun remapUnread(
+    unread: Map<String, Int>,
+    sessions: List<HermesSession>,
+): Map<String, Int> =
+    unread.entries.fold(emptyMap()) { result, (key, count) ->
+        val storedId = sessions.firstOrNull { it.id == key || it.runtimeId == key }?.id ?: key
+        result + (storedId to ((result[storedId] ?: 0) + count))
+    }
 
 private fun mergeParallelGroup(
     items: List<ChatItem>,
