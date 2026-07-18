@@ -180,15 +180,6 @@ sealed interface ChatItem {
     ) : ChatItem {
         val final: Boolean
             get() = state in setOf("completed", "failed", "cancelled")
-
-        val details: String
-            get() =
-                listOfNotNull(
-                        arguments?.takeIf(String::isNotBlank)?.let { "Arguments\n$it" },
-                        result?.takeIf(String::isNotBlank)?.let { "Result\n$it" },
-                        error?.takeIf(String::isNotBlank)?.let { "Error\n$it" },
-                    )
-                    .joinToString("\n\n")
     }
 
     data class ParallelToolGroup(val id: String, val tools: List<Tool>) : ChatItem {
@@ -214,19 +205,26 @@ private fun toolCallCount(item: ChatItem): Int =
         else -> 0
     }
 
-fun toolArgumentRows(arguments: String?): List<String> {
-    val raw = arguments?.takeIf(String::isNotBlank) ?: return emptyList()
-    val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrNull()
-    if (parsed is JsonObject)
-        return parsed.map { (name, value) -> "${name.singleLine()}: ${value.toolArgumentValue()}" }
-    return listOf("arguments: ${raw.singleLine()}")
+data class ToolValueRow(val name: String, val value: String) {
+    val summary: String
+        get() = "${name.singleLine()}: ${value.singleLine()}"
 }
 
-private fun JsonElement.toolArgumentValue(): String =
+fun toolValueRows(content: String?, fallbackName: String): List<ToolValueRow> {
+    val raw = content?.takeIf(String::isNotBlank) ?: return emptyList()
+    val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrNull()
+    if (parsed is JsonObject && parsed.isNotEmpty())
+        return parsed.map { (name, value) ->
+            ToolValueRow(name = name.singleLine(), value = value.toolValue())
+        }
+    return listOf(ToolValueRow(fallbackName, raw))
+}
+
+private fun JsonElement.toolValue(): String =
     when (this) {
         is JsonPrimitive -> content
         else -> toString()
-    }.singleLine()
+    }
 
 private fun String.singleLine(): String = replace(Regex("\\R+"), " ").trim()
 
