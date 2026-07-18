@@ -482,27 +482,35 @@ private fun ChatPane(
     }
 }
 
-internal data class TimelineKey(val kind: String, val identity: Any?)
-
-internal fun timelineKey(index: Int, item: ChatItem): TimelineKey =
+internal fun timelineKey(index: Int, item: ChatItem): String =
     when (item) {
         is ChatItem.Message ->
             when {
-                item.uiKey != null -> TimelineKey("message-live", item.uiKey)
-                item.id != null -> TimelineKey("message-id", item.id)
-                else -> TimelineKey("message-fallback", listOf(item.role, item.timestamp, index))
+                item.uiKey != null -> encodedTimelineKey("message-live", item.uiKey)
+                item.id != null -> encodedTimelineKey("message-id", item.id)
+                else -> encodedTimelineKey("message-fallback", item.role, item.timestamp, index)
             }
         is ChatItem.Tool ->
-            if (item.id != null) TimelineKey("tool-id", item.id)
-            else TimelineKey("tool-fallback", listOf(item.name, item.startedAt, index))
-        is ChatItem.ParallelToolGroup -> TimelineKey("parallel", item.id)
+            if (item.id != null) encodedTimelineKey("tool-id", item.id)
+            else encodedTimelineKey("tool-fallback", item.name, item.startedAt, index)
+        is ChatItem.ParallelToolGroup -> encodedTimelineKey("parallel", item.id)
         is ChatItem.ToolGroup ->
-            TimelineKey(
+            encodedTimelineKey(
                 "tool-group",
-                item.operations.mapIndexed { child, operation -> timelineKey(child, operation) },
+                *item.operations
+                    .mapIndexed { child, operation -> timelineKey(child, operation) }
+                    .toTypedArray(),
             )
-        is ChatItem.Status -> TimelineKey("status", listOf(item.timestamp, item.text, index))
+        is ChatItem.Status -> encodedTimelineKey("status", item.timestamp, item.text, index)
     }
+
+private fun encodedTimelineKey(kind: String, vararg identities: Any?): String = buildString {
+    append(kind)
+    identities.forEach { identity ->
+        val value = identity?.toString().orEmpty()
+        append('|').append(value.length).append(':').append(value)
+    }
+}
 
 @Composable
 private fun ModelPickerDialog(
