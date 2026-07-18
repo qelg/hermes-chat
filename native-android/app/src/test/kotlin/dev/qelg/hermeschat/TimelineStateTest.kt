@@ -166,6 +166,25 @@ class TimelineStateTest {
     }
 
     @Test
+    fun timelineKeysAreBundleSaveableStrings() {
+        val items =
+            listOf<ChatItem>(
+                ChatItem.Message("assistant", "Stored", id = "22377"),
+                ChatItem.Message("assistant", "Live", uiKey = "live:1"),
+                ChatItem.Tool("tool:1", "terminal", "completed"),
+                ChatItem.ParallelToolGroup(
+                    "batch:1",
+                    listOf(ChatItem.Tool("tool:2", "read_file", "completed")),
+                ),
+                ChatItem.ToolGroup(listOf(ChatItem.Tool("tool:3", "search_files", "completed"))),
+                ChatItem.Status("working"),
+            )
+        items.forEachIndexed { index, item ->
+            assertEquals(String::class.java, (timelineKey(index, item) as Any).javaClass)
+        }
+    }
+
+    @Test
     fun historyRowsPairParallelStartsWithResultsAndEstimateMeaningfulDurations() {
         val rows =
             Json.parseToJsonElement(
