@@ -51,11 +51,65 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
     }
 }
 
+fun sortSessionsForOverview(sessions: List<HermesSession>): List<HermesSession> =
+    sessions.sortedWith(compareByDescending { it.updatedAt?.let(::parseSessionUpdateInstant) })
+
+private val earliestSessionUpdate = java.time.Instant.parse("2000-01-01T00:00:00Z")
+private val latestSessionUpdateExclusive = java.time.Instant.parse("2100-01-01T00:00:00Z")
+
+private fun parseSessionUpdateInstant(value: String): java.time.Instant? {
+    val parsed = runCatching { java.time.Instant.parse(value) }.getOrNull()
+    if (parsed != null)
+        return parsed.takeIf {
+            !it.isBefore(earliestSessionUpdate) && it.isBefore(latestSessionUpdateExclusive)
+        }
+    val epochSeconds =
+        value.toDoubleOrNull()?.takeIf {
+            it.isFinite() &&
+                it >= earliestSessionUpdate.epochSecond &&
+                it < latestSessionUpdateExclusive.epochSecond
+        } ?: return null
+    return java.time.Instant.ofEpochMilli((epochSeconds * 1000).toLong())
+}
+
+fun isSessionUpdateRead(session: HermesSession, readAt: String?): Boolean {
+    val updated = session.updatedAt?.let(::parseSessionUpdateInstant) ?: return false
+    val read = readAt?.let(::parseSessionUpdateInstant) ?: return false
+    return read >= updated
+}
+
+fun canMarkSessionRead(historyLoadedFor: String?, selectedId: String?, sessionId: String): Boolean =
+    historyLoadedFor == sessionId && selectedId == sessionId
+
+fun confirmedReadAt(
+    session: HermesSession,
+    now: java.time.Instant = java.time.Instant.now(),
+): String {
+    val updated = session.updatedAt?.let(::parseSessionUpdateInstant)
+    return maxOf(now, updated ?: now).toString()
+}
+
+fun formatSessionUpdate(
+    value: String,
+    zoneId: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    locale: java.util.Locale = java.util.Locale.getDefault(),
+): String? =
+    parseSessionUpdateInstant(value)?.let {
+        java.time.format.DateTimeFormatter.ofLocalizedDateTime(
+                java.time.format.FormatStyle.MEDIUM,
+                java.time.format.FormatStyle.SHORT,
+            )
+            .withLocale(locale)
+            .withZone(zoneId)
+            .format(it)
+    }
+
 fun prioritizeSessionsWithDrafts(
     sessions: List<HermesSession>,
     drafts: Map<String, String>,
 ): List<HermesSession> {
-    val (withDraft, withoutDraft) = sessions.partition { drafts[it.id]?.isNotBlank() == true }
+    val sorted = sortSessionsForOverview(sessions)
+    val (withDraft, withoutDraft) = sorted.partition { drafts[it.id]?.isNotBlank() == true }
     return withDraft + withoutDraft
 }
 
@@ -386,7 +440,23 @@ data class ConnectionConfig(
     val token: String = "",
 ) {
     val normalizedBaseUrl: String
-        get() = baseUrl.trim().trimEnd('/')
+        get() {
+            val trimmed = baseUrl.trim().trimEnd('/')
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
+            val scheme = uri.scheme?.lowercase() ?: return trimmed
+            val host = uri.host?.lowercase()?.trimEnd('.') ?: return trimmed
+            if (
+                uri.userInfo != null ||
+                    uri.rawQuery != null ||
+                    uri.rawFragment != null ||
+                    uri.rawPath !in setOf("", "/")
+            )
+                return trimmed
+            val defaultPort =
+                (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
+            val port = if (defaultPort) -1 else uri.port
+            return URI(scheme, null, host, port, null, null, null).toString()
+        }
 
     fun isAllowedEndpoint(): Boolean {
         val uri = runCatching { URI(normalizedBaseUrl) }.getOrNull() ?: return false

@@ -9,12 +9,17 @@ import dev.qelg.hermeschat.data.ModelSelection
 import dev.qelg.hermeschat.data.ToolValuePreview
 import dev.qelg.hermeschat.data.ToolValueRow
 import dev.qelg.hermeschat.data.canClearDraft
+import dev.qelg.hermeschat.data.canMarkSessionRead
+import dev.qelg.hermeschat.data.confirmedReadAt
 import dev.qelg.hermeschat.data.filterSessions
+import dev.qelg.hermeschat.data.formatSessionUpdate
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
+import dev.qelg.hermeschat.data.isSessionUpdateRead
 import dev.qelg.hermeschat.data.modelSwitchValue
 import dev.qelg.hermeschat.data.prettyToolValue
 import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
+import dev.qelg.hermeschat.data.sortSessionsForOverview
 import dev.qelg.hermeschat.data.toolCountBreakdown
 import dev.qelg.hermeschat.data.toolValuePreview
 import dev.qelg.hermeschat.data.toolValueRows
@@ -39,6 +44,73 @@ class ModelsTest {
             )
         assertEquals(listOf("1"), filterSessions(sessions, "apk").map { it.id })
         assertEquals(listOf("1"), filterSessions(sessions, "RELEASE").map { it.id })
+    }
+
+    @Test
+    fun sessionsAreSortedNewestFirstByLatestUpdate() {
+        val sessions =
+            listOf(
+                HermesSession("old", "Old", updatedAt = "2026-07-18T08:00:00Z"),
+                HermesSession("unknown", "Unknown"),
+                HermesSession("new", "New", updatedAt = "2026-07-18T10:00:00Z"),
+                HermesSession("middle", "Middle", updatedAt = "2026-07-18T09:00:00Z"),
+            )
+
+        assertEquals(
+            listOf("new", "middle", "old", "unknown"),
+            sortSessionsForOverview(sessions).map(HermesSession::id),
+        )
+    }
+
+    @Test
+    fun latestUpdateIsFormattedInTheDevicesZone() {
+        assertEquals(
+            "18.07.2026, 12:00",
+            formatSessionUpdate(
+                "2026-07-18T10:00:00Z",
+                java.time.ZoneId.of("Europe/Berlin"),
+                java.util.Locale.GERMANY,
+            ),
+        )
+        assertEquals(null, formatSessionUpdate("not-a-time"))
+    }
+
+    @Test
+    fun sessionIsReadOnlyWhenAndroidConfirmedItAfterTheLatestUpdate() {
+        val session = HermesSession("chat", "Chat", updatedAt = "2026-07-18T10:00:00Z")
+
+        assertTrue(!isSessionUpdateRead(session, null))
+        assertTrue(!isSessionUpdateRead(session, "2026-07-18T09:59:59Z"))
+        assertTrue(isSessionUpdateRead(session, "2026-07-18T10:00:00Z"))
+        assertTrue(isSessionUpdateRead(session, "2026-07-18T10:00:01Z"))
+    }
+
+    @Test
+    fun readConfirmationRequiresSuccessfullyLoadedSelectedHistory() {
+        assertTrue(!canMarkSessionRead(null, "chat", "chat"))
+        assertTrue(!canMarkSessionRead("other", "chat", "chat"))
+        assertTrue(!canMarkSessionRead("chat", "other", "chat"))
+        assertTrue(canMarkSessionRead("chat", "chat", "chat"))
+    }
+
+    @Test
+    fun confirmedReadTimestampCoversFutureServerUpdate() {
+        val session = HermesSession("chat", "Chat", updatedAt = "2026-07-18T10:01:00Z")
+
+        assertEquals(
+            "2026-07-18T10:01:00Z",
+            confirmedReadAt(session, Instant.parse("2026-07-18T10:00:00Z")),
+        )
+    }
+
+    @Test
+    fun nonFiniteNumericSessionUpdateIsUnknownAndUnread() {
+        val session = HermesSession("chat", "Chat", updatedAt = "NaN")
+
+        assertTrue(!isSessionUpdateRead(session, "2026-07-18T10:00:00Z"))
+        assertEquals(null, formatSessionUpdate("Infinity"))
+        assertEquals(null, formatSessionUpdate("1e308"))
+        assertEquals(null, formatSessionUpdate("4102444801"))
     }
 
     @Test
@@ -312,6 +384,22 @@ class ModelsTest {
             )
         assertTrue(blocks.first() is ChatItem.ToolGroup)
         assertEquals(active, blocks.last())
+    }
+
+    @Test
+    fun equivalentServerUrlsShareOneNormalizedNamespace() {
+        assertEquals(
+            "https://example.com",
+            ConnectionConfig(" HTTPS://EXAMPLE.COM:443/ ").normalizedBaseUrl,
+        )
+        assertEquals(
+            "http://example.com",
+            ConnectionConfig("http://Example.Com:80").normalizedBaseUrl,
+        )
+        assertEquals(
+            "https://example.com:8443",
+            ConnectionConfig("https://EXAMPLE.com:8443/").normalizedBaseUrl,
+        )
     }
 
     @Test
