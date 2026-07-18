@@ -6,9 +6,7 @@ import android.Manifest
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
-import android.text.SpannableString
 import android.text.method.LinkMovementMethod
-import android.text.style.URLSpan
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -33,7 +31,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.text.HtmlCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -43,9 +40,6 @@ import dev.qelg.hermeschat.data.*
 import java.io.File
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import org.commonmark.ext.gfm.tables.TablesExtension
-import org.commonmark.parser.Parser
-import org.commonmark.renderer.html.HtmlRenderer
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -628,7 +622,7 @@ private fun MessageCard(message: ChatItem.Message) {
             modifier = Modifier.widthIn(max = 680.dp),
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (message.role == "assistant") MarkdownText(message.text)
+                if (shouldRenderMarkdown(message)) MarkdownText(message.text)
                 else SelectionContainer { Text(message.text) }
                 message.timestamp?.let {
                     ClockText(it, Modifier.align(Alignment.End).padding(top = 2.dp))
@@ -796,12 +790,8 @@ private fun toolIcon(name: String) =
 
 @Composable
 private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
-    val html =
-        remember(markdown) {
-            val parser = Parser.builder().extensions(listOf(TablesExtension.create())).build()
-            val raw = HtmlRenderer.builder().escapeHtml(true).build().render(parser.parse(markdown))
-            replaceTablesWithText(raw)
-        }
+    val context = LocalContext.current
+    val markwon = remember(context) { markdownRenderer(context) }
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     AndroidView(
         factory = { context ->
@@ -811,11 +801,6 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
             }
         },
         update = {
-            val safe = SpannableString(HtmlCompat.fromHtml(html, HtmlCompat.FROM_HTML_MODE_COMPACT))
-            safe.getSpans(0, safe.length, URLSpan::class.java).forEach { span ->
-                if (!isSafeExternalUrl(span.url)) safe.removeSpan(span)
-            }
-            it.text = safe
             it.setTextColor(
                 android.graphics.Color.argb(
                     (color.alpha * 255).toInt(),
@@ -824,37 +809,10 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                     (color.blue * 255).toInt(),
                 )
             )
+            markwon.setMarkdown(it, markdown)
         },
         modifier = modifier,
     )
-}
-
-private fun replaceTablesWithText(html: String): String {
-    val tablePattern = Regex("<table>(.*?)</table>", RegexOption.DOT_MATCHES_ALL)
-    return tablePattern.replace(html) { match ->
-        val body = match.groupValues[1]
-        val rows =
-            Regex("<tr>(.*?)</tr>", RegexOption.DOT_MATCHES_ALL)
-                .findAll(body)
-                .map { rowMatch ->
-                    Regex("<t[hd]>(.*?)</t[hd]>", RegexOption.DOT_MATCHES_ALL)
-                        .findAll(rowMatch.groupValues[1])
-                        .map { it.groupValues[1].replace(Regex("<[^>]+>"), "").trim() }
-                        .toList()
-                }
-                .toList()
-        if (rows.isEmpty() || rows.all { it.isEmpty() }) return@replace ""
-        val colCount = rows.maxOf { it.size }
-        val colWidths =
-            (0 until colCount).map { col -> rows.maxOf { row -> row.getOrElse(col) { "" }.length } }
-        val lines =
-            rows.map { row ->
-                (0 until colCount).joinToString(" | ") { col ->
-                    row.getOrElse(col) { "" }.padEnd(colWidths[col])
-                }
-            }
-        "<pre>" + lines.joinToString("\n") + "</pre>"
-    }
 }
 
 @Composable
