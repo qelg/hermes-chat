@@ -1,7 +1,7 @@
 package dev.qelg.hermeschat
 
-import android.text.method.LinkMovementMethod
 import android.widget.TextView
+import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -17,6 +17,23 @@ class MarkdownTextViewTest {
         configureMarkdownTextView(textView)
 
         assertTrue(textView.isTextSelectable)
-        assertTrue(textView.movementMethod is LinkMovementMethod)
+        assertTrue(textView.movementMethod is TableAwareMovementMethod)
+    }
+
+    @Test
+    fun renderedGfmTableRequestsConstrainedWidth() {
+        val context = RuntimeEnvironment.getApplication()
+        val rendered =
+            markdownRenderer(context)
+                .toMarkdown(
+                    """
+                    | Funktion | Status |
+                    |---|---|
+                    | Markdown | ✅ |
+                    """
+                        .trimIndent()
+                )
+
+        assertTrue(containsMarkdownTable(rendered))
     }
 }
