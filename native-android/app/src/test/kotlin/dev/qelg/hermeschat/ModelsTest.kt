@@ -47,6 +47,30 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionListActivityFieldsAreDecoded() {
+        val current =
+            HermesSession.fromJson(
+                buildJsonObject {
+                    put("id", "current")
+                    put("title", "Current")
+                    put("last_active", 1784390400)
+                    put("started_at", 1784380000)
+                }
+            )
+        val legacy =
+            HermesSession.fromJson(
+                buildJsonObject {
+                    put("id", "legacy")
+                    put("title", "Legacy")
+                    put("started_at", 1784380000)
+                }
+            )
+
+        assertEquals("1784390400", current.updatedAt)
+        assertEquals("1784380000", legacy.updatedAt)
+    }
+
+    @Test
     fun sessionsAreSortedNewestFirstByLatestUpdate() {
         val sessions =
             listOf(
