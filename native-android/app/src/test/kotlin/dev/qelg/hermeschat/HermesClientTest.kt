@@ -312,4 +312,94 @@ class HermesClientTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun conversationTokenUsageTraversesOnlyCompressionParents() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"id":"tip","parent_session_id":"root","input_tokens":50,"output_tokens":10,"cache_read_tokens":150,"cache_write_tokens":5,"api_call_count":1}"""
+                )
+        )
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"id":"root","end_reason":"compression","input_tokens":100,"output_tokens":20,"cache_read_tokens":300,"cache_write_tokens":10,"api_call_count":2}"""
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            val usage = client.conversationTokenUsage("tip")
+
+            assertEquals(645L, usage.totalTokens)
+            assertEquals("/api/sessions/tip", server.takeRequest().path)
+            assertEquals("/api/sessions/root", server.takeRequest().path)
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun tokenUsageUsesContextRpcAndPersistedSessionDetail() = runBlocking {
+        val server = MockWebServer()
+        val rpcRequests = Channel<JsonObject>(Channel.UNLIMITED)
+        server.enqueue(
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            val request = Json.parseToJsonElement(text).jsonObject
+                            rpcRequests.trySend(request)
+                            val id = request["id"]!!.jsonPrimitive.content
+                            webSocket.send(
+                                """{"jsonrpc":"2.0","id":"$id","result":{"categories":[],"context_used":500,"context_max":1000,"estimated_total":500}}"""
+                            )
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
+                    }
+                )
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"id":"stored-1","input_tokens":120,"output_tokens":30,"cache_read_tokens":400,"cache_write_tokens":10,"api_call_count":2}"""
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            val context = client.contextBreakdown("runtime-1")
+            val rpc = withTimeout(5_000) { rpcRequests.receive() }
+            val cumulative = client.sessionTokenUsage("stored-1")
+
+            assertEquals("session.context_breakdown", rpc["method"]!!.jsonPrimitive.content)
+            assertEquals(
+                "runtime-1",
+                rpc["params"]!!.jsonObject["session_id"]!!.jsonPrimitive.content,
+            )
+            assertEquals(500L, context.contextUsed)
+            assertEquals(560L, cumulative.totalTokens)
+            assertEquals("/api/ws?token=test", server.takeRequest().path)
+            assertEquals("/api/sessions/stored-1", server.takeRequest().path)
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
 }

@@ -45,6 +45,7 @@ data class ChatUiState(
     val error: ErrorMessage? = null,
     val reconnectSeconds: Int? = null,
     val updateState: UpdateState = UpdateState(),
+    val tokenUsage: TokenUsageState? = null,
 )
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
@@ -59,10 +60,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private val draftRevisions = mutableMapOf<Pair<String, String>, Long>()
     private var client: HermesClient? = null
     private var runtimeId: String? = null
+    private var usageStoredId: String? = null
     private var connectionJob: Job? = null
     private var eventJob: Job? = null
     private var selectionJob: Job? = null
     private var refreshJob: Job? = null
+    private var usageJob: Job? = null
     private var connectionVersion = 0L
     private var selectionVersion = 0L
     private var historyRequestVersion = 0L
@@ -94,8 +97,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         eventJob?.cancel()
         selectionJob?.cancel()
         refreshJob?.cancel()
+        usageJob?.cancel()
         client?.close()
         runtimeId = null
+        usageStoredId = null
         runtimeToStored.clear()
         val version = ++connectionVersion
         val next = HermesClient(config, viewModelScope)
@@ -115,6 +120,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 active = false,
                 error = null,
                 reconnectSeconds = null,
+                tokenUsage = null,
             )
         }
         eventJob =
@@ -152,6 +158,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         eventJob?.cancel()
         selectionJob?.cancel()
         refreshJob?.cancel()
+        usageJob?.cancel()
         connectionVersion++
         selectionVersion++
         client?.close()
@@ -159,6 +166,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeToStored.clear()
         credentials.clear()
         runtimeId = null
+        usageStoredId = null
         savedState["selectedId"] = null
         _state.value = ChatUiState()
     }
@@ -355,6 +363,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     runtimeId =
                         result.string("session_id") ?: error("Hermes returned no session ID")
                     val stored = result.string("stored_session_id") ?: runtimeId!!
+                    usageStoredId = stored
                     runtimeToStored[runtimeId!!] = stored
                     val session = HermesSession(stored, "Untitled session", source = "mobile")
                     savedState["selectedId"] = stored
@@ -367,6 +376,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             approval = null,
                             clarify = null,
                             active = false,
+                            tokenUsage = null,
                             sessions = listOf(session) + it.sessions,
                         )
                     }
@@ -377,8 +387,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun select(session: HermesSession) {
         val api = client ?: return
         selectionJob?.cancel()
+        usageJob?.cancel()
         val version = ++selectionVersion
         runtimeId = null
+        usageStoredId = session.id
         savedState["selectedId"] = session.id
         _state.update {
             val keepTimeline = it.selectedId == session.id
@@ -393,6 +405,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 active = false,
                 error = null,
                 reconnectSeconds = null,
+                tokenUsage = null,
             )
         }
         selectionJob =
@@ -412,7 +425,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             resumed.string("session_id")
                                 ?: error("Hermes returned no runtime session ID")
                         runtimeId = resumedRuntimeId
-                        runtimeToStored[resumedRuntimeId] = session.id
+                        usageStoredId = resumed.string("stored_session_id") ?: session.id
+                        runtimeToStored[resumedRuntimeId] = usageStoredId!!
                         val baseline = state.value.items
                         val historyVersion = ++historyRequestVersion
                         val history = messagesFromHistoryRows(api.history(session.id))
@@ -434,6 +448,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 )
                         }
                         refreshModels(api, resumedRuntimeId, connectionVersion)
+                        refreshTokenUsage()
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
             }
@@ -627,6 +642,38 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         return resolveStoredSessionId(eventId, runtimeToStored, state.value.sessions)
     }
 
+    private fun refreshTokenUsage() {
+        val api = client ?: return
+        val runtime = runtimeId ?: return
+        val selected = state.value.selectedId ?: return
+        val stored = usageStoredId ?: selected
+        val version = selectionVersion
+        usageJob?.cancel()
+        usageJob =
+            viewModelScope.launch {
+                val context = runCatching { api.contextBreakdown(runtime) }.getOrNull()
+                val cumulative = runCatching { api.conversationTokenUsage(stored) }.getOrNull()
+                if (
+                    client !== api ||
+                        selectionVersion != version ||
+                        runtimeId != runtime ||
+                        state.value.selectedId != selected ||
+                        (usageStoredId ?: selected) != stored
+                )
+                    return@launch
+                _state.update {
+                    val current = it.tokenUsage ?: TokenUsageState()
+                    it.copy(
+                        tokenUsage =
+                            current.copy(
+                                context = context ?: current.context,
+                                cumulative = cumulative ?: current.cumulative,
+                            )
+                    )
+                }
+            }
+    }
+
     private fun handleEvent(event: GatewayEvent) {
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
@@ -642,14 +689,37 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             "session.info" -> {
                 val model = event.payload["model"]?.jsonPrimitive?.contentOrNull
                 val provider = event.payload["provider"]?.jsonPrimitive?.contentOrNull
-                if (!model.isNullOrBlank() && !provider.isNullOrBlank()) {
-                    _state.update {
-                        it.copy(
-                            modelCatalog =
-                                it.modelCatalog.copy(selected = ModelSelection(provider, model))
-                        )
-                    }
+                val latestStored =
+                    event.payload["stored_session_id"]
+                        ?.jsonPrimitive
+                        ?.contentOrNull
+                        ?.takeIf(String::isNotBlank)
+                val storedChanged = latestStored != null && latestStored != usageStoredId
+                if (latestStored != null) {
+                    usageStoredId = latestStored
+                    (event.sessionId ?: runtimeId)?.let { runtimeToStored[it] = latestStored }
                 }
+                val liveUsage = LiveTokenUsage.fromSessionInfo(JsonObject(event.payload))
+                _state.update {
+                    val selected =
+                        if (!model.isNullOrBlank() && !provider.isNullOrBlank())
+                            ModelSelection(provider, model)
+                        else it.modelCatalog.selected
+                    val previousUsage =
+                        if (storedChanged) it.tokenUsage?.copy(cumulative = null) else it.tokenUsage
+                    val usage =
+                        if (liveUsage != null)
+                            (previousUsage ?: TokenUsageState()).copy(
+                                context = null,
+                                live = liveUsage,
+                            )
+                        else previousUsage
+                    it.copy(
+                        modelCatalog = it.modelCatalog.copy(selected = selected),
+                        tokenUsage = usage,
+                    )
+                }
+                refreshTokenUsage()
             }
             "clarify.request" -> {
                 val parsed = parseClarifyRequest(event.payload)
@@ -693,6 +763,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 incrementUnread(state.value.selectedId)
                 scheduleRefresh()
                 reloadHistory()
+                refreshTokenUsage()
             }
             "tool.start",
             "tool.complete",

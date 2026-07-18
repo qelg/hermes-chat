@@ -26,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.hermeschat.data.*
 import java.io.File
+import java.text.NumberFormat
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -305,6 +307,7 @@ private fun ChatPane(
 ) {
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
     var showModels by rememberSaveable { mutableStateOf(false) }
+    var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -438,6 +441,9 @@ private fun ChatPane(
                 )
         }
         HorizontalDivider()
+        state.tokenUsage?.let { usage ->
+            ContextUsageBar(usage, onClick = { showUsageDetails = true })
+        }
         if (state.transcribing) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -465,14 +471,15 @@ private fun ChatPane(
                 }
                 if (clarify.choices.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    Row(
+                    Column(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         clarify.choices.forEach { choice ->
                             AssistChip(
                                 onClick = { vm.answerClarify(choice) },
                                 label = { Text(choice) },
+                                Modifier.fillMaxWidth(),
                             )
                         }
                     }
@@ -510,7 +517,166 @@ private fun ChatPane(
             onDismiss = { showModels = false },
         )
     }
+    if (showUsageDetails) {
+        TokenUsageBottomSheet(state.tokenUsage, onDismiss = { showUsageDetails = false })
+    }
 }
+
+@Composable
+private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
+    val context = usage.context
+    val window = usage.currentContext ?: return
+    val used = window.used
+    val max = window.max
+    val estimatedBase = context?.baseTokens ?: 0L
+    val estimatedConversation = context?.conversationTokens ?: 0L
+    val estimatedUsed = estimatedBase + estimatedConversation
+    val hasBreakdown = estimatedUsed > 0L
+    val base = if (hasBreakdown) used.toDouble() * estimatedBase / estimatedUsed else 0.0
+    val conversation = if (hasBreakdown) (used - base).coerceAtLeast(0.0) else 0.0
+    val unknown = if (hasBreakdown) 0.0 else used.toDouble()
+    val free = (max - used).coerceAtLeast(0L).toDouble()
+    val percent = window.percent
+    Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Context", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${formatTokenCount(used)} / ${formatTokenCount(max)} · $percent%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(5.dp))
+            Row(
+                Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(99.dp)),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                if (base > 0.0)
+                    Spacer(
+                        Modifier.weight(base.toFloat())
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                if (conversation > 0.0)
+                    Spacer(
+                        Modifier.weight(conversation.toFloat())
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.tertiary)
+                    )
+                if (unknown > 0.0)
+                    Spacer(
+                        Modifier.weight(unknown.toFloat())
+                            .fillMaxHeight()
+                            .background(
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            )
+                    )
+                if (free > 0.0)
+                    Spacer(
+                        Modifier.weight(free.toFloat())
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit) {
+    val context = usage?.context
+    val window = usage?.currentContext
+    val cumulative = usage?.cumulative
+    val used = window?.used ?: 0L
+    val max = window?.max ?: 0L
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Context & usage", style = MaterialTheme.typography.headlineSmall)
+            if (window != null) {
+                val percent = window.percent
+                Text("Current context", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · $percent%",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (context?.categories.isNullOrEmpty()) {
+                    Text(
+                        "Detailed breakdown currently unavailable",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    context.categories.forEach { category ->
+                        UsageDetailRow(
+                            category.label,
+                            category.tokens,
+                            category.tokens.percentOf(max),
+                        )
+                    }
+                }
+                UsageDetailRow(
+                    "Free",
+                    (max - used).coerceAtLeast(0L),
+                    (max - used).coerceAtLeast(0L).percentOf(max),
+                )
+                Text(
+                    "Category values are approximate.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text("Context usage is available after the first completed model call.")
+            }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text("Total conversation usage", style = MaterialTheme.typography.titleMedium)
+            if (cumulative != null) {
+                Text(
+                    "${formatTokenCount(cumulative.totalTokens)} tokens",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                UsageDetailRow("Prompt processed", cumulative.processedInputTokens)
+                UsageDetailRow("Uncached input", cumulative.inputTokens)
+                UsageDetailRow("Read from cache", cumulative.cacheReadTokens)
+                UsageDetailRow("Written to cache", cumulative.cacheWriteTokens)
+                UsageDetailRow("Model output", cumulative.outputTokens)
+                UsageDetailRow("Of which reasoning", cumulative.reasoningTokens)
+                Text(
+                    buildString {
+                        append("${cumulative.apiCalls} model calls")
+                        cumulative.cacheHitPercent?.let { append(" · $it% cache hit") }
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text("No persisted token totals are available yet.")
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun UsageDetailRow(label: String, tokens: Long, percent: Int? = null) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Text(
+            buildString {
+                append(formatTokenCount(tokens))
+                percent?.let { append(" · $it%") }
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun Long.percentOf(total: Long): Int? =
+    if (total > 0L) ((toDouble() / total) * 100).toInt().coerceIn(0, 100) else null
+
+private fun formatTokenCount(value: Long): String = NumberFormat.getIntegerInstance().format(value)
 
 internal fun timelineKey(index: Int, item: ChatItem): String =
     when (item) {
