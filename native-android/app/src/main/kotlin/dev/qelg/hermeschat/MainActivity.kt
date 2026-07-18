@@ -11,6 +11,7 @@ import android.text.method.LinkMovementMethod
 import android.text.style.URLSpan
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -143,6 +144,11 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 760.dp
+        // On narrow layouts, the system back button must return to the session
+        // list instead of closing the app when a chat is open.
+        BackHandler(enabled = !wide && !showSessions && state.selectedId != null) {
+            showSessions = true
+        }
         if (wide)
             Row {
                 SessionPane(state, vm, Modifier.width(320.dp).fillMaxHeight()) {}
