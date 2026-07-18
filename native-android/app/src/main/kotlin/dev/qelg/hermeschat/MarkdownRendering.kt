@@ -1,6 +1,8 @@
 package dev.qelg.hermeschat
 
 import android.content.Context
+import android.text.method.LinkMovementMethod
+import android.widget.TextView
 import dev.qelg.hermeschat.data.ChatItem
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import io.noties.markwon.AbstractMarkwonPlugin
@@ -13,6 +15,11 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
 
 internal fun shouldRenderMarkdown(message: ChatItem.Message): Boolean =
     message.role == "assistant" && !message.pendingCanonical
+
+internal fun configureMarkdownTextView(textView: TextView) {
+    textView.setTextIsSelectable(true)
+    textView.movementMethod = LinkMovementMethod.getInstance()
+}
 
 internal fun markdownRenderer(context: Context): Markwon = MarkdownRenderer.get(context)
 

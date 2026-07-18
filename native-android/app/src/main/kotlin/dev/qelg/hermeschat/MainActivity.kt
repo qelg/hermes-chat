@@ -6,7 +6,6 @@ import android.Manifest
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
-import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -812,12 +811,7 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     val markwon = remember(context) { markdownRenderer(context) }
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     AndroidView(
-        factory = { context ->
-            TextView(context).apply {
-                movementMethod = LinkMovementMethod.getInstance()
-                setTextIsSelectable(true)
-            }
-        },
+        factory = { context -> TextView(context).apply(::configureMarkdownTextView) },
         update = {
             it.setTextColor(
                 android.graphics.Color.argb(
