@@ -284,6 +284,35 @@ class HermesClient(
             .orEmpty()
     }
 
+    suspend fun contextBreakdown(runtimeSessionId: String): ContextBreakdown =
+        ContextBreakdown.fromJson(
+            request(
+                "session.context_breakdown",
+                mapOf("session_id" to JsonPrimitive(runtimeSessionId)),
+            )
+        )
+
+    suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =
+        CumulativeTokenUsage.fromJson(sessionDetail(storedSessionId))
+
+    suspend fun conversationTokenUsage(storedSessionId: String): CumulativeTokenUsage {
+        var detail = sessionDetail(storedSessionId)
+        var total = CumulativeTokenUsage.fromJson(detail)
+        val visited = mutableSetOf(storedSessionId)
+        while (visited.size < 100) {
+            val parentId = detail.string("parent_session_id")?.takeIf(String::isNotBlank) ?: break
+            if (!visited.add(parentId)) break
+            val parent = sessionDetail(parentId)
+            if (parent.string("end_reason") != "compression") break
+            total += CumulativeTokenUsage.fromJson(parent)
+            detail = parent
+        }
+        return total
+    }
+
+    private suspend fun sessionDetail(storedSessionId: String): JsonObject =
+        http("GET", "/api/sessions/${storedSessionId.urlEncode()}")
+
     suspend fun transcribe(bytes: ByteArray, mimeType: String): String {
         val data = java.util.Base64.getEncoder().encodeToString(bytes)
         val response =
