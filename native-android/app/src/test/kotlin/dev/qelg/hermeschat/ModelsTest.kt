@@ -6,14 +6,17 @@ import dev.qelg.hermeschat.data.DraftSubmission
 import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.ModelCatalog
 import dev.qelg.hermeschat.data.ModelSelection
+import dev.qelg.hermeschat.data.ToolValuePreview
 import dev.qelg.hermeschat.data.ToolValueRow
 import dev.qelg.hermeschat.data.canClearDraft
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import dev.qelg.hermeschat.data.modelSwitchValue
+import dev.qelg.hermeschat.data.prettyToolValue
 import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
 import dev.qelg.hermeschat.data.toolCountBreakdown
+import dev.qelg.hermeschat.data.toolValuePreview
 import dev.qelg.hermeschat.data.toolValueRows
 import dev.qelg.hermeschat.data.updateDrafts
 import dev.qelg.hermeschat.data.upsertTool
@@ -149,6 +152,34 @@ class ModelsTest {
 
         assertEquals(listOf(ToolValueRow("answer", "line one\nline two")), rows)
         assertEquals("answer: line one line two", rows.single().summary)
+    }
+
+    @Test
+    fun toolValuePreviewKeepsFirstFieldAndCountsTheRest() {
+        val rows =
+            listOf(
+                ToolValueRow("first", "one"),
+                ToolValueRow("second", "two"),
+                ToolValueRow("third", "three"),
+            )
+
+        assertEquals(ToolValuePreview(rows.first(), 2), toolValuePreview(rows))
+        assertEquals(ToolValuePreview(rows.first(), 0), toolValuePreview(rows.take(1)))
+        assertEquals(null, toolValuePreview(emptyList()))
+    }
+
+    @Test
+    fun toolValueJsonIsPrettyPrintedWhilePlainTextIsPreserved() {
+        assertEquals(
+            """{
+    "name": "Hermes",
+    "nested": {
+        "ok": true
+    }
+}""",
+            prettyToolValue("""{"name":"Hermes","nested":{"ok":true}}"""),
+        )
+        assertEquals("plain\ntext", prettyToolValue("plain\ntext"))
     }
 
     @Test

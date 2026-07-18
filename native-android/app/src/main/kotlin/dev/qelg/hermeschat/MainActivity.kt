@@ -700,7 +700,7 @@ private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
 
 @Composable
 private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
-    var selectedValue by remember(tool.id) { mutableStateOf<String?>(null) }
+    var showDetails by remember(tool.id) { mutableStateOf(false) }
     var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
     val requestRows = remember(tool.arguments) { toolValueRows(tool.arguments, "arguments") }
     val answerRows =
@@ -710,6 +710,8 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
                 addAll(toolValueRows(tool.error, "error"))
             }
         }
+    val requestPreview = remember(requestRows) { toolValuePreview(requestRows) }
+    val answerPreview = remember(answerRows) { toolValuePreview(answerRows) }
     LaunchedEffect(tool.id, tool.state, tool.startedAt) {
         while (!tool.final && tool.startedAt != null) {
             now = java.time.Instant.now()
@@ -739,12 +741,12 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
         leadingContent = { Icon(toolIcon(tool.name), null) },
         trailingContent = { (tool.startedAt ?: tool.completedAt)?.let { ClockText(it) } },
         supportingContent = {
-            if (requestRows.isNotEmpty() || answerRows.isNotEmpty())
+            if (requestPreview != null || answerPreview != null)
                 Column {
-                    CompactToolValueRows(requestRows) { selectedValue = it }
-                    if (requestRows.isNotEmpty() && answerRows.isNotEmpty())
-                        Spacer(Modifier.height(6.dp))
-                    CompactToolValueRows(answerRows) { selectedValue = it }
+                    requestPreview?.let { CompactToolValuePreview(it) }
+                    if (requestPreview != null && answerPreview != null)
+                        Spacer(Modifier.height(4.dp))
+                    answerPreview?.let { CompactToolValuePreview(it) }
                 }
         },
         colors =
@@ -753,16 +755,124 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
                     if (nested) MaterialTheme.colorScheme.surfaceContainerHigh
                     else Color.Transparent
             ),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable { showDetails = true },
     )
-    selectedValue?.let { value ->
-        ToolValueScreen(value = value, onDismiss = { selectedValue = null })
+    if (showDetails)
+        ToolCallScreen(
+            tool = tool,
+            requestRows = requestRows,
+            answerRows = answerRows,
+            durationMs = durationMs,
+            onDismiss = { showDetails = false },
+        )
+}
+
+@Composable
+private fun CompactToolValuePreview(preview: ToolValuePreview) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            preview.first.summary,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (preview.remainingFields > 0) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "+${preview.remainingFields} fields",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+            )
+        }
     }
 }
 
 @Composable
-private fun CompactToolValueRows(rows: List<ToolValueRow>, onOpen: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+private fun ToolCallScreen(
+    tool: ChatItem.Tool,
+    requestRows: List<ToolValueRow>,
+    answerRows: List<ToolValueRow>,
+    durationMs: Long?,
+    onDismiss: () -> Unit,
+) {
+    var selectedValue by remember(tool.id) { mutableStateOf<String?>(null) }
+    val timestamp = tool.startedAt ?: tool.completedAt
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties =
+            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    Column(Modifier.weight(1f)) {
+                        Text(tool.name, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            buildString {
+                                append(tool.state)
+                                durationMs?.let {
+                                    append(" · ")
+                                    if (tool.durationEstimated) append("≈ ")
+                                    append(formatElapsed(it))
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    timestamp?.let { ClockText(it) }
+                }
+                HorizontalDivider()
+                Column(
+                    Modifier.weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp)
+                ) {
+                    Text("Request", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    if (requestRows.isEmpty())
+                        Text(
+                            "No fields",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                        )
+                    else ToolDetailRows(requestRows) { selectedValue = it }
+                    Spacer(Modifier.height(18.dp))
+                    Text("Response", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    if (answerRows.isEmpty())
+                        Text(
+                            "No fields",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                        )
+                    else ToolDetailRows(answerRows) { selectedValue = it }
+                }
+            }
+        }
+    }
+    selectedValue?.let { value ->
+        ToolValueScreen(
+            toolName = tool.name,
+            timestamp = timestamp,
+            value = value,
+            onDismiss = { selectedValue = null },
+        )
+    }
+}
+
+@Composable
+private fun ToolDetailRows(rows: List<ToolValueRow>, onOpen: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         rows.forEach { row ->
             var truncated by remember(row.summary) { mutableStateOf(false) }
             Text(
@@ -772,7 +882,7 @@ private fun CompactToolValueRows(rows: List<ToolValueRow>, onOpen: (String) -> U
                         .then(
                             if (truncated) Modifier.clickable { onOpen(row.value) } else Modifier
                         ),
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.bodySmall,
                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -785,7 +895,14 @@ private fun CompactToolValueRows(rows: List<ToolValueRow>, onOpen: (String) -> U
 }
 
 @Composable
-private fun ToolValueScreen(value: String, onDismiss: () -> Unit) {
+private fun ToolValueScreen(
+    toolName: String,
+    timestamp: java.time.Instant?,
+    value: String,
+    onDismiss: () -> Unit,
+) {
+    var wrapLines by remember(value) { mutableStateOf(true) }
+    val displayValue = remember(value) { prettyToolValue(value) }
     Dialog(
         onDismissRequest = onDismiss,
         properties =
@@ -793,18 +910,35 @@ private fun ToolValueScreen(value: String, onDismiss: () -> Unit) {
     ) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                Row(
+                    Modifier.fillMaxWidth().padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    Column(Modifier.weight(1f)) {
+                        Text(toolName, style = MaterialTheme.typography.titleMedium)
+                        timestamp?.let { ClockText(it) }
+                    }
+                    TextButton({ wrapLines = !wrapLines }) {
+                        Text(if (wrapLines) "No wrap" else "Wrap")
+                    }
+                }
+                HorizontalDivider()
                 SelectionContainer(Modifier.weight(1f)) {
                     Box(
                         Modifier.fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .horizontalScroll(rememberScrollState())
+                            .then(
+                                if (wrapLines) Modifier
+                                else Modifier.horizontalScroll(rememberScrollState())
+                            )
                     ) {
                         Text(
-                            value,
-                            Modifier.padding(16.dp),
+                            displayValue,
+                            Modifier.then(if (wrapLines) Modifier.fillMaxWidth() else Modifier)
+                                .padding(16.dp),
                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            softWrap = false,
+                            softWrap = wrapLines,
                         )
                     }
                 }

@@ -210,6 +210,11 @@ data class ToolValueRow(val name: String, val value: String) {
         get() = "${name.singleLine()}: ${value.singleLine()}"
 }
 
+data class ToolValuePreview(val first: ToolValueRow, val remainingFields: Int)
+
+fun toolValuePreview(rows: List<ToolValueRow>): ToolValuePreview? =
+    rows.firstOrNull()?.let { ToolValuePreview(it, rows.size - 1) }
+
 fun toolValueRows(content: String?, fallbackName: String): List<ToolValueRow> {
     val raw = content?.takeIf(String::isNotBlank) ?: return emptyList()
     val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrNull()
@@ -219,6 +224,14 @@ fun toolValueRows(content: String?, fallbackName: String): List<ToolValueRow> {
         }
     return listOf(ToolValueRow(fallbackName, raw))
 }
+
+private val prettyToolJson = Json { prettyPrint = true }
+
+fun prettyToolValue(value: String): String =
+    runCatching {
+            prettyToolJson.encodeToString(JsonElement.serializer(), Json.parseToJsonElement(value))
+        }
+        .getOrDefault(value)
 
 private fun JsonElement.toolValue(): String =
     when (this) {
