@@ -30,6 +30,7 @@ data class ChatUiState(
     val sessions: List<HermesSession> = emptyList(),
     val search: String = "",
     val selectedId: String? = null,
+    val drafts: Map<String, String> = emptyMap(),
     val title: String = "Hermes Chat",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
@@ -46,9 +47,12 @@ data class ChatUiState(
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
     AndroidViewModel(application) {
     private val credentials = SecureCredentials(application)
+    private val draftStore = DraftStore(application)
     private val _state = MutableStateFlow(ChatUiState(selectedId = savedState["selectedId"]))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
     val updateManager = UpdateManager(application)
+    private var draftNamespace = ""
+    private val draftRevisions = mutableMapOf<Pair<String, String>, Long>()
     private var client: HermesClient? = null
     private var runtimeId: String? = null
     private var connectionJob: Job? = null
@@ -76,6 +80,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             return
         }
         credentials.save(config)
+        draftNamespace = config.normalizedBaseUrl
+        val drafts = draftStore.load(draftNamespace)
         connectionJob?.cancel()
         eventJob?.cancel()
         selectionJob?.cancel()
@@ -89,6 +95,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             it.copy(
                 configured = true,
                 connecting = true,
+                drafts = drafts,
                 items = emptyList(),
                 approval = null,
                 clarify = null,
@@ -143,6 +150,43 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
+
+    fun setDraft(text: String) {
+        val sessionId = state.value.selectedId ?: return
+        val key = draftNamespace to sessionId
+        draftRevisions[key] = (draftRevisions[key] ?: 0) + 1
+        draftStore.save(draftNamespace, sessionId, text)
+        _state.update { it.copy(drafts = updateDrafts(it.drafts, sessionId, text)) }
+    }
+
+    private fun captureDraftSubmission(sessionId: String, text: String): DraftSubmission? {
+        if (state.value.drafts[sessionId] != text) return null
+        val key = draftNamespace to sessionId
+        return DraftSubmission(
+            namespace = draftNamespace,
+            connectionVersion = connectionVersion,
+            sessionId = sessionId,
+            revision = draftRevisions[key] ?: 0,
+            text = text,
+        )
+    }
+
+    private fun clearDraft(submitted: DraftSubmission) {
+        val key = submitted.namespace to submitted.sessionId
+        if (
+            !canClearDraft(
+                submitted,
+                draftNamespace,
+                connectionVersion,
+                draftRevisions[key] ?: 0,
+                state.value.drafts[submitted.sessionId],
+            )
+        )
+            return
+        draftRevisions[key] = submitted.revision + 1
+        draftStore.save(submitted.namespace, submitted.sessionId, "")
+        _state.update { it.copy(drafts = updateDrafts(it.drafts, submitted.sessionId, "")) }
+    }
 
     private suspend fun refreshSessions(api: HermesClient, version: Long) {
         val result = api.request("session.list", mapOf("limit" to JsonPrimitive(200)))
@@ -342,6 +386,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun send(text: String) {
         val clean = text.trim()
         if (clean.isEmpty()) return
+        val storedId = state.value.selectedId ?: return
+        val submittedDraft = captureDraftSubmission(storedId, text)
         viewModelScope.launch {
             if (runtimeId == null) createAndAwait()
             val id = runtimeId ?: return@launch
@@ -356,8 +402,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     client?.request(
                         "prompt.submit",
                         mapOf("session_id" to JsonPrimitive(id), "text" to JsonPrimitive(clean)),
-                    )
+                    ) ?: error("Not connected")
                 }
+                .onSuccess { submittedDraft?.let(::clearDraft) }
                 .onFailure {
                     _state.update { s -> s.copy(active = false) }
                     showError(it)
@@ -425,25 +472,38 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val clean = text.trim()
         if (clean.isEmpty()) return
         val requestId = _state.value.clarify?.requestId ?: return
-        val sessionId = runtimeId
+        val sessionId = runtimeId ?: return
+        val storedId = state.value.selectedId ?: return
+        val api = client ?: return
+        val version = connectionVersion
+        val namespace = draftNamespace
+        val submittedDraft = captureDraftSubmission(storedId, text)
         _state.update { it.copy(clarify = null) }
         viewModelScope.launch {
             runCatching {
-                    client?.request(
+                    api.request(
                         "clarify.respond",
                         mapOf(
-                            "session_id" to JsonPrimitive(sessionId ?: ""),
+                            "session_id" to JsonPrimitive(sessionId),
                             "request_id" to JsonPrimitive(requestId),
                             "answer" to JsonPrimitive(clean),
                         ),
                     )
                 }
+                .onSuccess { submittedDraft?.let(::clearDraft) }
                 .onFailure {
-                    // If the response failed (e.g. expired prompt), recover by
-                    // sending the answer as a regular message so the user's text
-                    // isn't silently lost.
-                    _state.update { it.copy(clarify = null) }
-                    send(clean)
+                    // If the response expired, recover only while the same connection and chat are
+                    // still selected. This prevents an old response from being sent to a new chat.
+                    if (
+                        client === api &&
+                            connectionVersion == version &&
+                            draftNamespace == namespace &&
+                            runtimeId == sessionId &&
+                            state.value.selectedId == storedId
+                    ) {
+                        _state.update { it.copy(clarify = null) }
+                        send(text)
+                    }
                 }
         }
     }

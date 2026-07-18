@@ -194,7 +194,9 @@ private fun SessionPane(
     selected: () -> Unit,
 ) {
     val sessions =
-        remember(state.sessions, state.search) { filterSessions(state.sessions, state.search) }
+        remember(state.sessions, state.search, state.drafts) {
+            prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts)
+        }
     Column(modifier) {
         TopAppBar(
             title = { Text("Sessions") },
@@ -229,9 +231,18 @@ private fun SessionPane(
         if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(Modifier.weight(1f)) {
             items(sessions, key = { it.id }) { session ->
+                val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 ListItem(
                     headlineContent = { Text(session.title, maxLines = 1) },
-                    supportingContent = { session.preview?.let { Text(it, maxLines = 2) } },
+                    supportingContent = {
+                        if (draft != null)
+                            Text(
+                                "Draft · ${draft.trim()}",
+                                maxLines = 2,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        else session.preview?.let { Text(it, maxLines = 2) }
+                    },
                     leadingContent = {
                         if (session.active) Badge { Text("LIVE") }
                         else
@@ -241,6 +252,7 @@ private fun SessionPane(
                                 null,
                             )
                     },
+                    trailingContent = { if (draft != null) Badge { Text("DRAFT") } },
                     modifier =
                         Modifier.clickable {
                             vm.select(session)
@@ -266,7 +278,7 @@ private fun ChatPane(
     modifier: Modifier,
     onBack: (() -> Unit)? = null,
 ) {
-    var input by rememberSaveable { mutableStateOf("") }
+    val input = state.selectedId?.let(state.drafts::get).orEmpty()
     var showModels by rememberSaveable { mutableStateOf(false) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
@@ -394,7 +406,7 @@ private fun ChatPane(
             VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
             OutlinedTextField(
                 input,
-                { input = it },
+                vm::setDraft,
                 Modifier.weight(1f),
                 placeholder = {
                     Text(state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes")
@@ -402,11 +414,7 @@ private fun ChatPane(
                 maxLines = 6,
             )
             IconButton(
-                {
-                    val text = input
-                    input = ""
-                    if (state.clarify != null) vm.answerClarify(text) else vm.send(text)
-                },
+                { if (state.clarify != null) vm.answerClarify(input) else vm.send(input) },
                 enabled = input.isNotBlank() && !state.connecting,
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, "Send")

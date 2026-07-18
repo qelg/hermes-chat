@@ -2,14 +2,18 @@ package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ChatItem
 import dev.qelg.hermeschat.data.ConnectionConfig
+import dev.qelg.hermeschat.data.DraftSubmission
 import dev.qelg.hermeschat.data.HermesSession
 import dev.qelg.hermeschat.data.ModelCatalog
 import dev.qelg.hermeschat.data.ModelSelection
+import dev.qelg.hermeschat.data.canClearDraft
 import dev.qelg.hermeschat.data.filterSessions
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import dev.qelg.hermeschat.data.modelSwitchValue
+import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
 import dev.qelg.hermeschat.data.toolCountBreakdown
+import dev.qelg.hermeschat.data.updateDrafts
 import dev.qelg.hermeschat.data.upsertTool
 import java.time.Instant
 import kotlinx.serialization.json.Json
@@ -30,6 +34,52 @@ class ModelsTest {
             )
         assertEquals(listOf("1"), filterSessions(sessions, "apk").map { it.id })
         assertEquals(listOf("1"), filterSessions(sessions, "RELEASE").map { it.id })
+    }
+
+    @Test
+    fun sessionsWithDraftsArePlacedFirstWithoutChangingGroupOrder() {
+        val sessions =
+            listOf(
+                HermesSession("1", "First"),
+                HermesSession("2", "Second"),
+                HermesSession("3", "Third"),
+                HermesSession("4", "Fourth"),
+            )
+
+        val sorted = prioritizeSessionsWithDrafts(sessions, mapOf("2" to "draft", "4" to "other"))
+
+        assertEquals(listOf("2", "4", "1", "3"), sorted.map { it.id })
+    }
+
+    @Test
+    fun blankDraftsDoNotAffectSessionOrder() {
+        val sessions = listOf(HermesSession("1", "First"), HermesSession("2", "Second"))
+
+        assertEquals(
+            listOf("1", "2"),
+            prioritizeSessionsWithDrafts(sessions, mapOf("2" to "  \n")).map { it.id },
+        )
+    }
+
+    @Test
+    fun draftUpdatesAreIsolatedPerSessionAndBlankTextRemovesOnlyThatDraft() {
+        val initial = mapOf("one" to "first", "two" to "second")
+
+        assertEquals(
+            mapOf("one" to "changed", "two" to "second"),
+            updateDrafts(initial, "one", "changed"),
+        )
+        assertEquals(mapOf("two" to "second"), updateDrafts(initial, "one", " \n "))
+    }
+
+    @Test
+    fun draftClearRequiresUnchangedRevisionNamespaceAndConnection() {
+        val submitted = DraftSubmission("server-a", 7, "chat", 3, "hello")
+
+        assertTrue(canClearDraft(submitted, "server-a", 7, 3, "hello"))
+        assertTrue(!canClearDraft(submitted, "server-a", 7, 5, "hello"))
+        assertTrue(!canClearDraft(submitted, "server-b", 7, 3, "hello"))
+        assertTrue(!canClearDraft(submitted, "server-a", 8, 3, "hello"))
     }
 
     @Test
