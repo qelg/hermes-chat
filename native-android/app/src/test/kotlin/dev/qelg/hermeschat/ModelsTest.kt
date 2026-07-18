@@ -182,6 +182,8 @@ class ModelsTest {
             )
         val summary = groupTimeline(items, minimumGroupSize = 4).single() as ChatItem.ToolGroup
         assertEquals(items, summary.operations)
+        assertEquals(4, summary.callCount)
+        assertEquals(3, summary.roundCount)
         assertEquals(
             linkedMapOf("read_file" to 1, "terminal" to 2, "patch" to 1),
             toolCountBreakdown(summary.operations),

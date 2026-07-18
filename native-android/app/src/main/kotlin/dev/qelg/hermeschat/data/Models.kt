@@ -190,6 +190,9 @@ sealed interface ChatItem {
     data class ToolGroup(val operations: List<ChatItem>) : ChatItem {
         val callCount: Int
             get() = operations.sumOf(::toolCallCount)
+
+        val roundCount: Int
+            get() = operations.size
     }
 
     data class Status(val text: String, val timestamp: java.time.Instant? = null) : ChatItem

@@ -571,7 +571,7 @@ private fun ToolSummaryCard(group: ChatItem.ToolGroup) {
                 Icon(Icons.Default.Build, null)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("${group.callCount} tool calls")
+                    Text("${group.callCount} tool calls in ${group.roundCount} rounds")
                     Text(
                         breakdown.entries.joinToString(" · ") { "${it.key} ×${it.value}" },
                         style = MaterialTheme.typography.labelSmall,
