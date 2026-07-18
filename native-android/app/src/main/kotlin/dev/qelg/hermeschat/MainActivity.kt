@@ -809,6 +809,8 @@ private fun toolIcon(name: String) =
 private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val markwon = remember(context) { markdownRenderer(context) }
+    val rendered = remember(markwon, markdown) { markwon.toMarkdown(markdown) }
+    val containsTable = remember(rendered) { containsMarkdownTable(rendered) }
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     AndroidView(
         factory = { context -> TextView(context).apply(::configureMarkdownTextView) },
@@ -821,9 +823,9 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                     (color.blue * 255).toInt(),
                 )
             )
-            markwon.setMarkdown(it, markdown)
+            markwon.setParsedMarkdown(it, rendered)
         },
-        modifier = modifier,
+        modifier = modifier.then(if (containsTable) Modifier.fillMaxWidth() else Modifier),
     )
 }
 

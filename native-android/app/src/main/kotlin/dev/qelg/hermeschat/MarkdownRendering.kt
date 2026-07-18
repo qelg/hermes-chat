@@ -1,7 +1,7 @@
 package dev.qelg.hermeschat
 
 import android.content.Context
-import android.text.method.LinkMovementMethod
+import android.text.Spanned
 import android.widget.TextView
 import dev.qelg.hermeschat.data.ChatItem
 import dev.qelg.hermeschat.data.isSafeExternalUrl
@@ -10,7 +10,9 @@ import io.noties.markwon.LinkResolverDef
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
+import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TablePlugin
+import io.noties.markwon.ext.tables.TableRowSpan
 import io.noties.markwon.ext.tasklist.TaskListPlugin
 
 internal fun shouldRenderMarkdown(message: ChatItem.Message): Boolean =
@@ -18,8 +20,11 @@ internal fun shouldRenderMarkdown(message: ChatItem.Message): Boolean =
 
 internal fun configureMarkdownTextView(textView: TextView) {
     textView.setTextIsSelectable(true)
-    textView.movementMethod = LinkMovementMethod.getInstance()
+    textView.movementMethod = TableAwareMovementMethod.create()
 }
+
+internal fun containsMarkdownTable(rendered: Spanned): Boolean =
+    rendered.getSpans(0, rendered.length, TableRowSpan::class.java).isNotEmpty()
 
 internal fun markdownRenderer(context: Context): Markwon = MarkdownRenderer.get(context)
 
