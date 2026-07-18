@@ -32,6 +32,8 @@ data class ChatUiState(
     val selectedId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
     val unreadCounts: Map<String, Int> = emptyMap(),
+    val readUpdates: Map<String, String> = emptyMap(),
+    val historyLoadedFor: String? = null,
     val title: String = "Hermes Chat",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
@@ -49,6 +51,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     AndroidViewModel(application) {
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
+    private val readStateStore = ReadStateStore(application)
     private val _state = MutableStateFlow(ChatUiState(selectedId = savedState["selectedId"]))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
     val updateManager = UpdateManager(application)
@@ -86,6 +89,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         credentials.save(config)
         draftNamespace = config.normalizedBaseUrl
         val drafts = draftStore.load(draftNamespace)
+        val readUpdates = readStateStore.load(draftNamespace)
         connectionJob?.cancel()
         eventJob?.cancel()
         selectionJob?.cancel()
@@ -100,7 +104,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             it.copy(
                 configured = true,
                 connecting = true,
+                sessions = emptyList(),
                 drafts = drafts,
+                unreadCounts = emptyMap(),
+                readUpdates = readUpdates,
+                historyLoadedFor = null,
                 items = emptyList(),
                 approval = null,
                 clarify = null,
@@ -313,8 +321,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         return@runCatching
                     _state.update {
                         val items = reconcileHistoryItems(history, it.items, baseline)
-                        if (items === it.items) it.copy(connecting = false)
-                        else it.copy(items = items, connecting = false)
+                        if (items === it.items)
+                            it.copy(connecting = false, historyLoadedFor = storedId)
+                        else it.copy(items = items, connecting = false, historyLoadedFor = storedId)
                     }
                 }
                 .onFailure {
@@ -354,6 +363,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             selectedId = stored,
                             title = session.title,
                             items = emptyList(),
+                            historyLoadedFor = stored,
                             approval = null,
                             clarify = null,
                             active = false,
@@ -377,6 +387,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 title = session.title,
                 connecting = true,
                 items = if (keepTimeline) it.items else emptyList(),
+                historyLoadedFor = null,
                 approval = null,
                 clarify = null,
                 active = false,
@@ -413,8 +424,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             return@runCatching
                         _state.update {
                             val items = reconcileHistoryItems(history, it.items, baseline)
-                            if (items === it.items) it.copy(connecting = false)
-                            else it.copy(items = items, connecting = false)
+                            if (items === it.items)
+                                it.copy(connecting = false, historyLoadedFor = session.id)
+                            else
+                                it.copy(
+                                    items = items,
+                                    connecting = false,
+                                    historyLoadedFor = session.id,
+                                )
                         }
                         refreshModels(api, resumedRuntimeId, connectionVersion)
                     }
@@ -480,6 +497,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 selectedId = stored,
                 title = "Untitled session",
                 items = emptyList(),
+                historyLoadedFor = stored,
                 approval = null,
                 clarify = null,
                 active = false,
@@ -583,9 +601,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun markRead(sessionId: String) {
+        val current = state.value
+        if (!canMarkSessionRead(current.historyLoadedFor, current.selectedId, sessionId)) return
+        val session = current.sessions.firstOrNull { it.id == sessionId } ?: return
+        val readAt = confirmedReadAt(session)
+        readStateStore.save(draftNamespace, sessionId, readAt)
         _state.update {
             val unread = clearUnread(it.unreadCounts, sessionId)
-            if (unread === it.unreadCounts) it else it.copy(unreadCounts = unread)
+            it.copy(unreadCounts = unread, readUpdates = it.readUpdates + (sessionId to readAt))
         }
     }
 

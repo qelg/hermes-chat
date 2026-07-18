@@ -231,16 +231,27 @@ private fun SessionPane(
             items(sessions, key = { it.id }) { session ->
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 val unread = state.unreadCounts[session.id] ?: 0
+                val updated = session.updatedAt?.let(::formatSessionUpdate)
+                val read = isSessionUpdateRead(session, state.readUpdates[session.id])
                 ListItem(
                     headlineContent = { Text(session.title, maxLines = 1) },
                     supportingContent = {
-                        if (draft != null)
-                            Text(
-                                "Draft · ${draft.trim()}",
-                                maxLines = 2,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        else session.preview?.let { Text(it, maxLines = 2) }
+                        Column {
+                            if (draft != null)
+                                Text(
+                                    "Draft · ${draft.trim()}",
+                                    maxLines = 2,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            else session.preview?.let { Text(it, maxLines = 2) }
+                            updated?.let {
+                                Text(
+                                    "Latest $it",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     },
                     leadingContent = {
                         if (session.active) Badge { Text("LIVE") }
@@ -252,9 +263,19 @@ private fun SessionPane(
                             )
                     },
                     trailingContent = {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(horizontalAlignment = Alignment.End) {
                             if (draft != null) Badge { Text("DRAFT") }
-                            if (unread > 0) Badge { Text(unread.toString()) }
+                            if (unread > 0) {
+                                Badge { Text("$unread unread") }
+                            } else if (updated != null && !read) {
+                                Badge { Text("Unread") }
+                            } else if (updated != null && read) {
+                                Text(
+                                    "Read",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     },
                     modifier =
@@ -288,6 +309,7 @@ private fun ChatPane(
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
+    val selectedUpdatedAt = state.sessions.firstOrNull { it.id == state.selectedId }?.updatedAt
     var followLatest by remember(state.selectedId) { mutableStateOf(true) }
     LaunchedEffect(list, state.selectedId) {
         snapshotFlow { list.isScrollInProgress to !list.canScrollForward }
@@ -308,8 +330,20 @@ private fun ChatPane(
             state.selectedId?.let(vm::markRead)
         }
     }
-    LaunchedEffect(unread, followLatest, state.selectedId) {
-        if (unread > 0 && followLatest) state.selectedId?.let(vm::markRead)
+    LaunchedEffect(
+        unread,
+        followLatest,
+        state.selectedId,
+        selectedUpdatedAt,
+        state.historyLoadedFor,
+    ) {
+        if (
+            followLatest &&
+                state.historyLoadedFor == state.selectedId &&
+                (unread > 0 || selectedUpdatedAt != null)
+        ) {
+            state.selectedId?.let(vm::markRead)
+        }
     }
     Column(modifier) {
         TopAppBar(
