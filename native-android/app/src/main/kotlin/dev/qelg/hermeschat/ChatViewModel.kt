@@ -675,6 +675,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         usageJob =
             viewModelScope.launch {
                 val context = runCatching { api.contextBreakdown(runtime) }.getOrNull()
+                val toolDefinitions = runCatching { api.toolDefinitions(runtime) }.getOrNull()
                 val details = runCatching { api.conversationTokenDetails(stored) }.getOrNull()
                 val currentIdentity =
                     TokenUsageRefreshIdentity(
@@ -696,6 +697,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 systemPrompt =
                                     if (details != null) details.systemPrompt
                                     else current.systemPrompt,
+                                toolDefinitions = toolDefinitions ?: current.toolDefinitions,
                             )
                     )
                 }

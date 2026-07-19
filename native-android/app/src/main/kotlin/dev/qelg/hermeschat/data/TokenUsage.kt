@@ -114,6 +114,43 @@ data class CumulativeTokenUsage(
 
 data class ConversationTokenDetails(val usage: CumulativeTokenUsage, val systemPrompt: String?)
 
+data class ToolSummary(val name: String, val description: String)
+
+data class ToolSection(val name: String, val tools: List<ToolSummary>)
+
+data class ToolDefinitions(val sections: List<ToolSection>, val total: Int) {
+    companion object {
+        fun fromJson(value: JsonObject): ToolDefinitions {
+            val sections =
+                (value["sections"] as? JsonArray)
+                    ?.mapNotNull { it as? JsonObject }
+                    ?.map { section ->
+                        ToolSection(
+                            name = section["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            tools =
+                                (section["tools"] as? JsonArray)
+                                    ?.mapNotNull { it as? JsonObject }
+                                    ?.mapNotNull { tool ->
+                                        val name =
+                                            tool["name"]?.jsonPrimitive?.contentOrNull
+                                                ?: return@mapNotNull null
+                                        ToolSummary(
+                                            name,
+                                            tool["description"]
+                                                ?.jsonPrimitive
+                                                ?.contentOrNull
+                                                .orEmpty(),
+                                        )
+                                    }
+                                    .orEmpty(),
+                        )
+                    }
+                    .orEmpty()
+            return ToolDefinitions(sections.filter { it.tools.isNotEmpty() }, value.int("total"))
+        }
+    }
+}
+
 data class LiveTokenUsage(
     val contextUsed: Long,
     val contextMax: Long,
@@ -142,6 +179,7 @@ data class TokenUsageState(
     val cumulative: CumulativeTokenUsage? = null,
     val live: LiveTokenUsage? = null,
     val systemPrompt: String? = null,
+    val toolDefinitions: ToolDefinitions? = null,
 ) {
     val currentContext: ContextWindow?
         get() {

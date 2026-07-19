@@ -5,6 +5,9 @@ import dev.qelg.hermeschat.data.ContextCategory
 import dev.qelg.hermeschat.data.CumulativeTokenUsage
 import dev.qelg.hermeschat.data.LiveTokenUsage
 import dev.qelg.hermeschat.data.TokenUsageState
+import dev.qelg.hermeschat.data.ToolDefinitions
+import dev.qelg.hermeschat.data.ToolSection
+import dev.qelg.hermeschat.data.ToolSummary
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -123,6 +126,22 @@ class TokenUsageTest {
         assertTrue(isSystemPromptExpandable(systemPrompt, "Full prompt"))
         assertFalse(isSystemPromptExpandable(systemPrompt, "  "))
         assertFalse(isSystemPromptExpandable(memory, "Full prompt"))
+    }
+
+    @Test
+    fun onlyToolDefinitionsCategoryWithRowsIsExpandable() {
+        val toolsCategory = ContextCategory("tool_definitions", "Tool definitions", 1_000)
+        val systemPrompt = ContextCategory("system_prompt", "System prompt", 100)
+        val definitions =
+            ToolDefinitions(
+                sections =
+                    listOf(ToolSection("files", listOf(ToolSummary("read_file", "Read a file.")))),
+                total = 1,
+            )
+
+        assertTrue(isToolDefinitionsExpandable(toolsCategory, definitions))
+        assertFalse(isToolDefinitionsExpandable(systemPrompt, definitions))
+        assertFalse(isToolDefinitionsExpandable(toolsCategory, ToolDefinitions(emptyList(), 0)))
     }
 
     @Test

@@ -349,6 +349,53 @@ class HermesClientTest {
     }
 
     @Test
+    fun toolDefinitionsUseActiveRuntimeSessionAndParseSections() = runBlocking {
+        val server = MockWebServer()
+        val rpcRequests = Channel<JsonObject>(Channel.UNLIMITED)
+        server.enqueue(
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            val request = Json.parseToJsonElement(text).jsonObject
+                            rpcRequests.trySend(request)
+                            val id = request["id"]!!.jsonPrimitive.content
+                            webSocket.send(
+                                """{"jsonrpc":"2.0","id":"$id","result":{"sections":[{"name":"files","tools":[{"name":"read_file","description":"Read a file."},{"name":"patch","description":"Edit a file."}]}],"total":2}}"""
+                            )
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
+                    }
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            val definitions = client.toolDefinitions("runtime-1")
+            val rpc = withTimeout(5_000) { rpcRequests.receive() }
+
+            assertEquals("tools.show", rpc["method"]!!.jsonPrimitive.content)
+            assertEquals(
+                "runtime-1",
+                rpc["params"]!!.jsonObject["session_id"]!!.jsonPrimitive.content,
+            )
+            assertEquals(2, definitions.total)
+            assertEquals("files", definitions.sections.single().name)
+            assertEquals("read_file", definitions.sections.single().tools.first().name)
+            assertEquals("Read a file.", definitions.sections.single().tools.first().description)
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun tokenUsageUsesContextRpcAndPersistedSessionDetail() = runBlocking {
         val server = MockWebServer()
         val rpcRequests = Channel<JsonObject>(Channel.UNLIMITED)
