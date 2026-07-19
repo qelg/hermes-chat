@@ -29,12 +29,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -74,8 +74,8 @@ private fun HermesApp(vm: ChatViewModel = viewModel()) {
 internal fun contentInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
     safeDrawing.union(ime)
 
-internal fun fullScreenContextDetailDialogProperties(): DialogProperties =
-    DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = true)
+internal fun Modifier.fullScreenDetailBackground(active: Boolean): Modifier =
+    if (active) clearAndSetSemantics {} else this
 
 @Composable
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
@@ -288,6 +288,7 @@ private fun ChatPane(
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
     var showModels by rememberSaveable { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
+    var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -328,187 +329,215 @@ private fun ChatPane(
             state.selectedId?.let(vm::markRead)
         }
     }
-    Column(modifier) {
-        TopAppBar(
-            navigationIcon = {
-                onBack?.let {
-                    IconButton(it) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Sessions") }
-                }
-            },
-            title = {
-                Column {
-                    Text(state.title, maxLines = 1)
-                    state.modelCatalog.selected?.let {
-                        Text(
-                            it.model,
-                            maxLines = 1,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+    Box(modifier) {
+        Column(
+            Modifier.fillMaxSize().fullScreenDetailBackground(active = fullScreenDetail != null)
+        ) {
+            TopAppBar(
+                navigationIcon = {
+                    onBack?.let {
+                        IconButton(it) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Sessions") }
+                    }
+                },
+                title = {
+                    Column {
+                        Text(state.title, maxLines = 1)
+                        state.modelCatalog.selected?.let {
+                            Text(
+                                it.model,
+                                maxLines = 1,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                windowInsets = WindowInsets(0, 0, 0, 0),
+                actions = {
+                    IconButton(
+                        {
+                            showModels = true
+                            vm.refreshModels()
+                        },
+                        enabled = !state.active,
+                    ) {
+                        Icon(Icons.Default.SmartToy, "Choose model")
+                    }
+                    if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
+                },
+            )
+            state.error?.let { error ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(error.text)
+                            state.reconnectSeconds?.let { seconds ->
+                                Text(
+                                    "Next connection attempt in $seconds s",
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                        state.reconnectSeconds?.let {
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = vm::reconnectNow) { Text("Connect now") }
+                        }
                     }
                 }
-            },
-            windowInsets = WindowInsets(0, 0, 0, 0),
-            actions = {
-                IconButton(
-                    {
-                        showModels = true
-                        vm.refreshModels()
-                    },
-                    enabled = !state.active,
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    state = list,
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(Icons.Default.SmartToy, "Choose model")
+                    itemsIndexed(blocks, key = ::timelineKey) { _, item ->
+                        TimelineItem(item) { tool ->
+                            fullScreenDetail = FullScreenDetail.ToolCall(tool)
+                        }
+                    }
+                    if (state.active)
+                        item(key = "working") {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Hermes is working…")
+                            }
+                        }
                 }
-                if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
-            },
-        )
-        state.error?.let { error ->
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            ) {
+                if (unread > 0 && !followLatest)
+                    AssistChip(
+                        onClick = {
+                            followLatest = true
+                            scope.launch {
+                                list.animateScrollToItem(
+                                    (blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0)
+                                )
+                                state.selectedId?.let(vm::markRead)
+                            }
+                        },
+                        label = {
+                            Text("$unread new ${if (unread == 1) "message" else "messages"}")
+                        },
+                        leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                    )
+            }
+            HorizontalDivider()
+            state.tokenUsage?.let { usage ->
+                ContextUsageBar(usage, onClick = { showUsageDetails = true })
+            }
+            if (state.transcribing) {
                 Row(
-                    Modifier.fillMaxWidth().padding(10.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(error.text)
-                        state.reconnectSeconds?.let { seconds ->
-                            Text(
-                                "Next connection attempt in $seconds s",
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                        }
-                    }
-                    state.reconnectSeconds?.let {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Uploading and transcribing voice…")
+                }
+            }
+            state.approval?.let { approval ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.width(8.dp))
-                        Button(onClick = vm::reconnectNow) { Text("Connect now") }
+                        Text(
+                            approval.description,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
-                }
-            }
-        }
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                state = list,
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                itemsIndexed(blocks, key = ::timelineKey) { _, item -> TimelineItem(item) }
-                if (state.active)
-                    item(key = "working") {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Hermes is working…")
+                    if (approval.command.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        SelectionContainer {
+                            Text(approval.command, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-            }
-            if (unread > 0 && !followLatest)
-                AssistChip(
-                    onClick = {
-                        followLatest = true
-                        scope.launch {
-                            list.animateScrollToItem(
-                                (blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0)
-                            )
-                            state.selectedId?.let(vm::markRead)
-                        }
-                    },
-                    label = { Text("$unread new ${if (unread == 1) "message" else "messages"}") },
-                    leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                )
-        }
-        HorizontalDivider()
-        state.tokenUsage?.let { usage ->
-            ContextUsageBar(usage, onClick = { showUsageDetails = true })
-        }
-        if (state.transcribing) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Uploading and transcribing voice…")
-            }
-        }
-        state.approval?.let { approval ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        approval.description,
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                if (approval.command.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    SelectionContainer {
-                        Text(approval.command, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = { vm.approve("once") }, label = { Text("Allow once") })
-                    if (approval.allowPermanent)
-                        AssistChip(onClick = { vm.approve("always") }, label = { Text("Always") })
-                    AssistChip(onClick = { vm.approve("deny") }, label = { Text("Deny") })
-                }
-            }
-        }
-        state.clarify?.let { clarify ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Help,
-                        null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        clarify.question,
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                if (clarify.choices.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    Column(
+                    Row(
                         Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        clarify.choices.forEach { choice ->
+                        AssistChip(onClick = { vm.approve("once") }, label = { Text("Allow once") })
+                        if (approval.allowPermanent)
                             AssistChip(
-                                onClick = { vm.answerClarify(choice) },
-                                label = { Text(choice) },
-                                Modifier.fillMaxWidth(),
+                                onClick = { vm.approve("always") },
+                                label = { Text("Always") },
                             )
+                        AssistChip(onClick = { vm.approve("deny") }, label = { Text("Deny") })
+                    }
+                }
+            }
+            state.clarify?.let { clarify ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Help,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            clarify.question,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    if (clarify.choices.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Column(
+                            Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            clarify.choices.forEach { choice ->
+                                AssistChip(
+                                    onClick = { vm.answerClarify(choice) },
+                                    label = { Text(choice) },
+                                    Modifier.fillMaxWidth(),
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-            VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
-            OutlinedTextField(
-                input,
-                vm::setDraft,
-                Modifier.weight(1f),
-                placeholder = {
-                    Text(state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes")
-                },
-                maxLines = 6,
-            )
-            IconButton(
-                { if (state.clarify != null) vm.answerClarify(input) else vm.send(input) },
-                enabled = input.isNotBlank() && !state.connecting,
-            ) {
-                Icon(Icons.AutoMirrored.Filled.Send, "Send")
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+                VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
+                OutlinedTextField(
+                    input,
+                    vm::setDraft,
+                    Modifier.weight(1f),
+                    placeholder = {
+                        Text(
+                            state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes"
+                        )
+                    },
+                    maxLines = 6,
+                )
+                IconButton(
+                    { if (state.clarify != null) vm.answerClarify(input) else vm.send(input) },
+                    enabled = input.isNotBlank() && !state.connecting,
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, "Send")
+                }
             }
+        }
+        when (val detail = fullScreenDetail) {
+            is FullScreenDetail.Context ->
+                ContextDetailScreen(detail.page, state.tokenUsage) { fullScreenDetail = null }
+            is FullScreenDetail.ToolCall ->
+                ToolCallScreen(
+                    tool = currentToolForDetail(state.items, detail.tool),
+                    onDismiss = { fullScreenDetail = null },
+                )
+            null -> Unit
         }
     }
     if (showModels) {
@@ -524,7 +553,14 @@ private fun ChatPane(
         )
     }
     if (showUsageDetails) {
-        TokenUsageBottomSheet(state.tokenUsage, onDismiss = { showUsageDetails = false })
+        TokenUsageBottomSheet(
+            usage = state.tokenUsage,
+            onOpenDetail = { page ->
+                showUsageDetails = false
+                fullScreenDetail = FullScreenDetail.Context(page)
+            },
+            onDismiss = { showUsageDetails = false },
+        )
     }
 }
 
@@ -590,14 +626,23 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
     }
 }
 
-private enum class ContextDetailPage {
+internal enum class ContextDetailPage {
     SystemPrompt,
     ToolDefinitions,
 }
 
+private sealed interface FullScreenDetail {
+    data class Context(val page: ContextDetailPage) : FullScreenDetail
+
+    data class ToolCall(val tool: ChatItem.Tool) : FullScreenDetail
+}
+
 @Composable
-private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit) {
-    var detailPage by rememberSaveable { mutableStateOf<ContextDetailPage?>(null) }
+private fun TokenUsageBottomSheet(
+    usage: TokenUsageState?,
+    onOpenDetail: (ContextDetailPage) -> Unit,
+    onDismiss: () -> Unit,
+) {
     val context = usage?.context
     val window = usage?.currentContext
     val cumulative = usage?.cumulative
@@ -635,7 +680,7 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
                             category.label,
                             category.tokens,
                             category.tokens.percentOf(max),
-                            onClick = page?.let { selected -> { detailPage = selected } },
+                            onClick = page?.let { selected -> { onOpenDetail(selected) } },
                             onClickLabel =
                                 when (page) {
                                     ContextDetailPage.SystemPrompt -> "Show full system prompt"
@@ -684,22 +729,28 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
             Spacer(Modifier.height(12.dp))
         }
     }
-    when (detailPage) {
+}
+
+@Composable
+internal fun ContextDetailScreen(
+    page: ContextDetailPage,
+    usage: TokenUsageState?,
+    onDismiss: () -> Unit,
+) {
+    when (page) {
         ContextDetailPage.SystemPrompt ->
-            usage?.systemPrompt?.let { prompt ->
-                FullScreenContextDetailDialog(
-                    title = "System prompt",
-                    onDismiss = { detailPage = null },
-                ) {
-                    Text(prompt, style = MaterialTheme.typography.bodyMedium)
-                }
+            FullScreenContextDetailScreen(title = "System prompt", onDismiss = onDismiss) {
+                Text(
+                    usage?.systemPrompt ?: "Details currently unavailable.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
         ContextDetailPage.ToolDefinitions ->
-            usage?.toolDefinitions?.let { definitions ->
-                FullScreenContextDetailDialog(
-                    title = "Tool definitions",
-                    onDismiss = { detailPage = null },
-                ) {
+            FullScreenContextDetailScreen(title = "Tool definitions", onDismiss = onDismiss) {
+                val definitions = usage?.toolDefinitions
+                if (definitions == null) {
+                    Text("Details currently unavailable.")
+                } else {
                     Text(
                         "${definitions.total} tools",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -726,38 +777,47 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
                     }
                 }
             }
-        null -> Unit
     }
 }
 
 @Composable
-internal fun FullScreenContextDetailDialog(
+internal fun FullScreenDetailContainer(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxSize().testTag("full-screen-detail"),
+        color = MaterialTheme.colorScheme.background,
+        content = content,
+    )
+}
+
+@Composable
+internal fun FullScreenContextDetailScreen(
     title: String,
     onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
-    Dialog(onDismissRequest = onDismiss, properties = fullScreenContextDetailDialogProperties()) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                    Text(title, style = MaterialTheme.typography.titleLarge)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                 }
-                HorizontalDivider()
-                Box(
-                    Modifier.fillMaxWidth()
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(16.dp)
-                ) {
-                    SelectionContainer { Column(Modifier.fillMaxWidth(), content = content) }
-                }
+                Text(title, style = MaterialTheme.typography.titleLarge)
+            }
+            HorizontalDivider()
+            Box(
+                Modifier.fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp)
+            ) {
+                SelectionContainer { Column(Modifier.fillMaxWidth(), content = content) }
             }
         }
     }
@@ -931,13 +991,28 @@ private fun ModelPickerDialog(
     )
 }
 
+internal fun currentToolForDetail(items: List<ChatItem>, opened: ChatItem.Tool): ChatItem.Tool {
+    val id = opened.id ?: return opened
+
+    fun findIn(item: ChatItem): ChatItem.Tool? =
+        when (item) {
+            is ChatItem.Tool -> item.takeIf { it.id == id }
+            is ChatItem.ParallelToolGroup -> item.tools.firstNotNullOfOrNull(::findIn)
+            is ChatItem.ToolGroup -> item.operations.firstNotNullOfOrNull(::findIn)
+            else -> null
+        }
+
+    return items.firstNotNullOfOrNull(::findIn) ?: opened
+}
+
 @Composable
-private fun TimelineItem(item: ChatItem) {
+private fun TimelineItem(item: ChatItem, onOpenToolDetails: (ChatItem.Tool) -> Unit) {
     when (item) {
         is ChatItem.Message -> MessageCard(item)
-        is ChatItem.Tool -> ToolCard(item)
-        is ChatItem.ParallelToolGroup -> ParallelToolGroupCard(item)
-        is ChatItem.ToolGroup -> ToolSummaryCard(item)
+        is ChatItem.Tool -> ToolCard(item, onOpenDetails = onOpenToolDetails)
+        is ChatItem.ParallelToolGroup ->
+            ParallelToolGroupCard(item, onOpenDetails = onOpenToolDetails)
+        is ChatItem.ToolGroup -> ToolSummaryCard(item, onOpenDetails = onOpenToolDetails)
         is ChatItem.Status ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(item.text, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -971,7 +1046,7 @@ private fun MessageCard(message: ChatItem.Message) {
 }
 
 @Composable
-private fun ToolSummaryCard(group: ChatItem.ToolGroup) {
+private fun ToolSummaryCard(group: ChatItem.ToolGroup, onOpenDetails: (ChatItem.Tool) -> Unit) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val breakdown = remember(group.operations) { toolCountBreakdown(group.operations) }
     Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
@@ -993,8 +1068,9 @@ private fun ToolSummaryCard(group: ChatItem.ToolGroup) {
             if (expanded)
                 group.operations.forEach { operation ->
                     when (operation) {
-                        is ChatItem.Tool -> ToolCard(operation)
-                        is ChatItem.ParallelToolGroup -> ParallelToolGroupCard(operation)
+                        is ChatItem.Tool -> ToolCard(operation, onOpenDetails = onOpenDetails)
+                        is ChatItem.ParallelToolGroup ->
+                            ParallelToolGroupCard(operation, onOpenDetails = onOpenDetails)
                         else -> Unit
                     }
                 }
@@ -1003,7 +1079,10 @@ private fun ToolSummaryCard(group: ChatItem.ToolGroup) {
 }
 
 @Composable
-private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
+private fun ParallelToolGroupCard(
+    group: ChatItem.ParallelToolGroup,
+    onOpenDetails: (ChatItem.Tool) -> Unit,
+) {
     var expanded by rememberSaveable(group.id) { mutableStateOf(true) }
     val complete = group.final
     val totalMs =
@@ -1029,14 +1108,18 @@ private fun ParallelToolGroupCard(group: ChatItem.ParallelToolGroup) {
                 }
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
             }
-            if (expanded) group.tools.forEach { ToolCard(it, nested = true) }
+            if (expanded)
+                group.tools.forEach { ToolCard(it, nested = true, onOpenDetails = onOpenDetails) }
         }
     }
 }
 
 @Composable
-private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
-    var showDetails by remember(tool.id) { mutableStateOf(false) }
+private fun ToolCard(
+    tool: ChatItem.Tool,
+    nested: Boolean = false,
+    onOpenDetails: (ChatItem.Tool) -> Unit,
+) {
     var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
     val requestRows = remember(tool.arguments) { toolValueRows(tool.arguments, "arguments") }
     val answerRows =
@@ -1091,16 +1174,8 @@ private fun ToolCard(tool: ChatItem.Tool, nested: Boolean = false) {
                     if (nested) MaterialTheme.colorScheme.surfaceContainerHigh
                     else Color.Transparent
             ),
-        modifier = Modifier.fillMaxWidth().clickable { showDetails = true },
+        modifier = Modifier.fillMaxWidth().clickable { onOpenDetails(tool) },
     )
-    if (showDetails)
-        ToolCallScreen(
-            tool = tool,
-            requestRows = requestRows,
-            answerRows = answerRows,
-            durationMs = durationMs,
-            onDismiss = { showDetails = false },
-        )
 }
 
 @Composable
@@ -1128,81 +1203,96 @@ private fun CompactToolValuePreview(preview: ToolValuePreview) {
 }
 
 @Composable
-private fun ToolCallScreen(
-    tool: ChatItem.Tool,
-    requestRows: List<ToolValueRow>,
-    answerRows: List<ToolValueRow>,
-    durationMs: Long?,
-    onDismiss: () -> Unit,
-) {
+internal fun ToolCallScreen(tool: ChatItem.Tool, onDismiss: () -> Unit) {
     var selectedValue by remember(tool.id) { mutableStateOf<String?>(null) }
+    var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
+    val requestRows = remember(tool.arguments) { toolValueRows(tool.arguments, "arguments") }
+    val answerRows =
+        remember(tool.result, tool.error) {
+            buildList {
+                addAll(toolValueRows(tool.result, "answer"))
+                addAll(toolValueRows(tool.error, "error"))
+            }
+        }
+    LaunchedEffect(tool.id, tool.state, tool.startedAt) {
+        while (!tool.final && tool.startedAt != null) {
+            now = java.time.Instant.now()
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    val durationMs =
+        tool.durationMs
+            ?: if (!tool.final && tool.startedAt != null)
+                java.time.Duration.between(tool.startedAt, now).toMillis().coerceAtLeast(0)
+            else null
     val timestamp = tool.startedAt ?: tool.completedAt
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties =
-            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(end = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                    Column(Modifier.weight(1f)) {
-                        Text(tool.name, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            buildString {
-                                append(tool.state)
-                                durationMs?.let {
-                                    append(" · ")
-                                    if (tool.durationEstimated) append("≈ ")
-                                    append(formatElapsed(it))
-                                }
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+    BackHandler(enabled = selectedValue == null, onBack = onDismiss)
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().fullScreenDetailBackground(active = selectedValue != null)) {
+            FullScreenDetailContainer {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(end = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                        Column(Modifier.weight(1f)) {
+                            Text(tool.name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                buildString {
+                                    append(tool.state)
+                                    durationMs?.let {
+                                        append(" · ")
+                                        if (tool.durationEstimated) append("≈ ")
+                                        append(formatElapsed(it))
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        timestamp?.let { ClockText(it) }
                     }
-                    timestamp?.let { ClockText(it) }
-                }
-                HorizontalDivider()
-                Column(
-                    Modifier.weight(1f)
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .padding(16.dp)
-                ) {
-                    Text("Request", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(6.dp))
-                    if (requestRows.isEmpty())
-                        Text(
-                            "No fields",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                        )
-                    else ToolDetailRows(requestRows) { selectedValue = it }
-                    Spacer(Modifier.height(18.dp))
-                    Text("Response", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(6.dp))
-                    if (answerRows.isEmpty())
-                        Text(
-                            "No fields",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                        )
-                    else ToolDetailRows(answerRows) { selectedValue = it }
+                    HorizontalDivider()
+                    Column(
+                        Modifier.weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp)
+                    ) {
+                        Text("Request", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(6.dp))
+                        if (requestRows.isEmpty())
+                            Text(
+                                "No fields",
+                                style = MaterialTheme.typography.bodySmall,
+                                color =
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                            )
+                        else ToolDetailRows(requestRows) { selectedValue = it }
+                        Spacer(Modifier.height(18.dp))
+                        Text("Response", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(6.dp))
+                        if (answerRows.isEmpty())
+                            Text(
+                                "No fields",
+                                style = MaterialTheme.typography.bodySmall,
+                                color =
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                            )
+                        else ToolDetailRows(answerRows) { selectedValue = it }
+                    }
                 }
             }
         }
-    }
-    selectedValue?.let { value ->
-        ToolValueScreen(
-            toolName = tool.name,
-            timestamp = timestamp,
-            value = value,
-            onDismiss = { selectedValue = null },
-        )
+        selectedValue?.let { value ->
+            ToolValueScreen(
+                toolName = tool.name,
+                timestamp = timestamp,
+                value = value,
+                onDismiss = { selectedValue = null },
+            )
+        }
     }
 }
 
@@ -1231,7 +1321,7 @@ private fun ToolDetailRows(rows: List<ToolValueRow>, onOpen: (String) -> Unit) {
 }
 
 @Composable
-private fun ToolValueScreen(
+internal fun ToolValueScreen(
     toolName: String,
     timestamp: java.time.Instant?,
     value: String,
@@ -1239,44 +1329,39 @@ private fun ToolValueScreen(
 ) {
     var wrapLines by remember(value) { mutableStateOf(true) }
     val displayValue = remember(value) { prettyToolValue(value) }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties =
-            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                    Column(Modifier.weight(1f)) {
-                        Text(toolName, style = MaterialTheme.typography.titleMedium)
-                        timestamp?.let { ClockText(it) }
-                    }
-                    TextButton({ wrapLines = !wrapLines }) {
-                        Text(if (wrapLines) "No wrap" else "Wrap")
-                    }
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                Column(Modifier.weight(1f)) {
+                    Text(toolName, style = MaterialTheme.typography.titleMedium)
+                    timestamp?.let { ClockText(it) }
                 }
-                HorizontalDivider()
-                SelectionContainer(Modifier.weight(1f)) {
-                    Box(
-                        Modifier.fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .then(
-                                if (wrapLines) Modifier
-                                else Modifier.horizontalScroll(rememberScrollState())
-                            )
-                    ) {
-                        Text(
-                            displayValue,
-                            Modifier.then(if (wrapLines) Modifier.fillMaxWidth() else Modifier)
-                                .padding(16.dp),
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            softWrap = wrapLines,
+                TextButton({ wrapLines = !wrapLines }) {
+                    Text(if (wrapLines) "No wrap" else "Wrap")
+                }
+            }
+            HorizontalDivider()
+            SelectionContainer(Modifier.weight(1f)) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .then(
+                            if (wrapLines) Modifier
+                            else Modifier.horizontalScroll(rememberScrollState())
                         )
-                    }
+                ) {
+                    Text(
+                        displayValue,
+                        Modifier.then(if (wrapLines) Modifier.fillMaxWidth() else Modifier)
+                            .padding(16.dp),
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        softWrap = wrapLines,
+                    )
                 }
             }
         }

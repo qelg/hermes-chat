@@ -31,12 +31,4 @@ class ContentInsetsTest {
 
         assertEquals(32, result.getBottom(density))
     }
-
-    @Test
-    fun fullScreenDetailUsesPlatformWindowFittingInsteadOfConsumedComposeInsets() {
-        val properties = fullScreenContextDetailDialogProperties()
-
-        assertEquals(false, properties.usePlatformDefaultWidth)
-        assertEquals(true, properties.decorFitsSystemWindows)
-    }
 }
