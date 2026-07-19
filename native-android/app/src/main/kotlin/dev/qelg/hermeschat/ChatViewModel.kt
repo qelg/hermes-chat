@@ -227,13 +227,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     private suspend fun refreshSessions(api: HermesClient, version: Long) {
-        val result = api.request("session.list", mapOf("limit" to JsonPrimitive(200)))
+        val result = api.sessions()
         if (client !== api || connectionVersion != version) return
-        val sessions =
-            result["sessions"]
-                ?.jsonArray
-                ?.mapNotNull { (it as? JsonObject)?.let(HermesSession::fromJson) }
-                .orEmpty()
+        val sessions = result.map(HermesSession::fromJson).filter { it.id.isNotBlank() }
         _state.update {
             it.copy(
                 sessions = sessions,
