@@ -320,7 +320,7 @@ class HermesClientTest {
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"id":"tip","parent_session_id":"root","input_tokens":50,"output_tokens":10,"cache_read_tokens":150,"cache_write_tokens":5,"api_call_count":1}"""
+                    """{"id":"tip","parent_session_id":"root","system_prompt":"System instructions\nSecond line","input_tokens":50,"output_tokens":10,"cache_read_tokens":150,"cache_write_tokens":5,"api_call_count":1}"""
                 )
         )
         server.enqueue(
@@ -335,9 +335,10 @@ class HermesClientTest {
         val client =
             HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
         try {
-            val usage = client.conversationTokenUsage("tip")
+            val details = client.conversationTokenDetails("tip")
 
-            assertEquals(645L, usage.totalTokens)
+            assertEquals(645L, details.usage.totalTokens)
+            assertEquals("System instructions\nSecond line", details.systemPrompt)
             assertEquals("/api/sessions/tip", server.takeRequest().path)
             assertEquals("/api/sessions/root", server.takeRequest().path)
         } finally {

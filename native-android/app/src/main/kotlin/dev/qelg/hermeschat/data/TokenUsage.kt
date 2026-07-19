@@ -112,6 +112,8 @@ data class CumulativeTokenUsage(
     }
 }
 
+data class ConversationTokenDetails(val usage: CumulativeTokenUsage, val systemPrompt: String?)
+
 data class LiveTokenUsage(
     val contextUsed: Long,
     val contextMax: Long,
@@ -139,6 +141,7 @@ data class TokenUsageState(
     val context: ContextBreakdown? = null,
     val cumulative: CumulativeTokenUsage? = null,
     val live: LiveTokenUsage? = null,
+    val systemPrompt: String? = null,
 ) {
     val currentContext: ContextWindow?
         get() {
