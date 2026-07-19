@@ -159,30 +159,6 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             SessionPane(state, vm, Modifier.fillMaxSize()) { showSessions = false }
         else ChatPane(state, vm, Modifier.fillMaxSize(), onBack = { showSessions = true })
     }
-    state.approval?.let { approval ->
-        AlertDialog(
-            onDismissRequest = {},
-            icon = { Icon(Icons.Default.Warning, null) },
-            title = { Text("Approval required") },
-            text = {
-                Column {
-                    Text(approval.description)
-                    if (approval.command.isNotBlank())
-                        SelectionContainer {
-                            Text(approval.command, style = MaterialTheme.typography.bodySmall)
-                        }
-                }
-            },
-            confirmButton = {
-                Row {
-                    TextButton({ vm.approve("once") }) { Text("Allow once") }
-                    if (approval.allowPermanent)
-                        TextButton({ vm.approve("always") }) { Text("Always") }
-                }
-            },
-            dismissButton = { TextButton({ vm.approve("deny") }) { Text("Deny") } },
-        )
-    }
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
 
@@ -452,6 +428,32 @@ private fun ChatPane(
                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
                 Text("Uploading and transcribing voice…")
+            }
+        }
+        state.approval?.let { approval ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        approval.description,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (approval.command.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    SelectionContainer {
+                        Text(approval.command, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(onClick = { vm.approve("once") }, label = { Text("Allow once") })
+                    if (approval.allowPermanent)
+                        AssistChip(onClick = { vm.approve("always") }, label = { Text("Always") })
+                    AssistChip(onClick = { vm.approve("deny") }, label = { Text("Deny") })
+                }
             }
         }
         state.clarify?.let { clarify ->
