@@ -74,8 +74,8 @@ private fun HermesApp(vm: ChatViewModel = viewModel()) {
 internal fun contentInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
     safeDrawing.union(ime)
 
-internal fun detailScrollableInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
-    contentInsets(safeDrawing, ime).only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+internal fun fullScreenContextDetailDialogProperties(): DialogProperties =
+    DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = true)
 
 @Composable
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
@@ -731,27 +731,17 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
 }
 
 @Composable
-private fun FullScreenContextDetailDialog(
+internal fun FullScreenContextDetailDialog(
     title: String,
     onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties =
-            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
+    Dialog(onDismissRequest = onDismiss, properties = fullScreenContextDetailDialogProperties()) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
                 Row(
-                    Modifier.fillMaxWidth()
-                        .padding(
-                            WindowInsets.safeDrawing
-                                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)
-                                .asPaddingValues()
-                        )
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(onClick = onDismiss) {
@@ -764,10 +754,6 @@ private fun FullScreenContextDetailDialog(
                     Modifier.fillMaxWidth()
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
-                        .padding(
-                            detailScrollableInsets(WindowInsets.safeDrawing, WindowInsets.ime)
-                                .asPaddingValues()
-                        )
                         .padding(16.dp)
                 ) {
                     SelectionContainer { Column(Modifier.fillMaxWidth(), content = content) }

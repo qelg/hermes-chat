@@ -33,15 +33,10 @@ class ContentInsetsTest {
     }
 
     @Test
-    fun fullScreenDetailMovesHorizontalAndBottomInsetsIntoScrollableContent() {
-        val safeDrawing = WindowInsets(left = 12, top = 48, right = 16, bottom = 32)
-        val ime = WindowInsets(bottom = 300)
+    fun fullScreenDetailUsesPlatformWindowFittingInsteadOfConsumedComposeInsets() {
+        val properties = fullScreenContextDetailDialogProperties()
 
-        val result = detailScrollableInsets(safeDrawing, ime)
-
-        assertEquals(12, result.getLeft(density, LayoutDirection.Ltr))
-        assertEquals(0, result.getTop(density))
-        assertEquals(16, result.getRight(density, LayoutDirection.Ltr))
-        assertEquals(300, result.getBottom(density))
+        assertEquals(false, properties.usePlatformDefaultWidth)
+        assertEquals(true, properties.decorFitsSystemWindows)
     }
 }
