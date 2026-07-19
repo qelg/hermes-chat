@@ -32,6 +32,40 @@ import org.junit.Test
 
 class HermesClientTest {
     @Test
+    fun sessionsUseRestResourceAndDecodeRichListData() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","data":[{"id":"stored-1","title":"REST session","last_active":1784390400,"source":"cli","preview":"More metadata","message_count":12}],"limit":200,"offset":0,"has_more":false}"""
+                )
+        )
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+        try {
+            val sessions = client.sessions()
+
+            assertEquals(1, sessions.size)
+            assertEquals("stored-1", sessions.single()["id"]?.jsonPrimitive?.contentOrNull)
+            assertEquals(
+                "More metadata",
+                sessions.single()["preview"]?.jsonPrimitive?.contentOrNull,
+            )
+            val request = server.takeRequest()
+            assertEquals("/api/sessions?limit=200", request.path)
+            assertEquals("test", request.getHeader("X-Hermes-Session-Token"))
+        } finally {
+            client.close()
+            scope.cancel()
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun modelCatalogAndSessionSwitchUseDesktopGatewayContract() = runBlocking {
         val server = MockWebServer()
         val requests = mutableListOf<JsonObject>()

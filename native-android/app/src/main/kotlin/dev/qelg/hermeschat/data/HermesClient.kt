@@ -284,6 +284,13 @@ class HermesClient(
             .orEmpty()
     }
 
+    suspend fun sessions(): List<JsonObject> {
+        val response = http("GET", "/api/sessions?limit=200")
+        return ((response["data"] as? JsonArray) ?: (response["sessions"] as? JsonArray))
+            ?.mapNotNull { it as? JsonObject }
+            .orEmpty()
+    }
+
     suspend fun contextBreakdown(runtimeSessionId: String): ContextBreakdown =
         ContextBreakdown.fromJson(
             request(
