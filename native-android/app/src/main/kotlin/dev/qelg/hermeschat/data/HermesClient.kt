@@ -292,6 +292,11 @@ class HermesClient(
             )
         )
 
+    suspend fun toolDefinitions(runtimeSessionId: String): ToolDefinitions =
+        ToolDefinitions.fromJson(
+            request("tools.show", mapOf("session_id" to JsonPrimitive(runtimeSessionId)))
+        )
+
     suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =
         CumulativeTokenUsage.fromJson(sessionDetail(storedSessionId))
 

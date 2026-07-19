@@ -74,6 +74,9 @@ private fun HermesApp(vm: ChatViewModel = viewModel()) {
 internal fun contentInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
     safeDrawing.union(ime)
 
+internal fun detailScrollableInsets(safeDrawing: WindowInsets, ime: WindowInsets): WindowInsets =
+    contentInsets(safeDrawing, ime).only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+
 @Composable
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
     var url by rememberSaveable { mutableStateOf("") }
@@ -587,9 +590,14 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
     }
 }
 
+private enum class ContextDetailPage {
+    SystemPrompt,
+    ToolDefinitions,
+}
+
 @Composable
 private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit) {
-    var showSystemPrompt by rememberSaveable { mutableStateOf(false) }
+    var detailPage by rememberSaveable { mutableStateOf<ContextDetailPage?>(null) }
     val context = usage?.context
     val window = usage?.currentContext
     val cumulative = usage?.cumulative
@@ -615,15 +623,25 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
                     )
                 } else {
                     context.categories.forEach { category ->
-                        val expandable = isSystemPromptExpandable(category, usage?.systemPrompt)
+                        val page =
+                            when {
+                                isSystemPromptExpandable(category, usage?.systemPrompt) ->
+                                    ContextDetailPage.SystemPrompt
+                                isToolDefinitionsExpandable(category, usage?.toolDefinitions) ->
+                                    ContextDetailPage.ToolDefinitions
+                                else -> null
+                            }
                         UsageDetailRow(
                             category.label,
                             category.tokens,
                             category.tokens.percentOf(max),
-                            onClick =
-                                if (expandable) {
-                                    { showSystemPrompt = true }
-                                } else null,
+                            onClick = page?.let { selected -> { detailPage = selected } },
+                            onClickLabel =
+                                when (page) {
+                                    ContextDetailPage.SystemPrompt -> "Show full system prompt"
+                                    ContextDetailPage.ToolDefinitions -> "Show tool definitions"
+                                    null -> null
+                                },
                         )
                     }
                 }
@@ -666,15 +684,58 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
             Spacer(Modifier.height(12.dp))
         }
     }
-    if (showSystemPrompt) {
-        usage?.systemPrompt?.let { prompt ->
-            SystemPromptDialog(prompt, onDismiss = { showSystemPrompt = false })
-        }
+    when (detailPage) {
+        ContextDetailPage.SystemPrompt ->
+            usage?.systemPrompt?.let { prompt ->
+                FullScreenContextDetailDialog(
+                    title = "System prompt",
+                    onDismiss = { detailPage = null },
+                ) {
+                    Text(prompt, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        ContextDetailPage.ToolDefinitions ->
+            usage?.toolDefinitions?.let { definitions ->
+                FullScreenContextDetailDialog(
+                    title = "Tool definitions",
+                    onDismiss = { detailPage = null },
+                ) {
+                    Text(
+                        "${definitions.total} tools",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    definitions.sections.forEach { section ->
+                        Text(
+                            section.name,
+                            Modifier.padding(top = 16.dp, bottom = 4.dp),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        section.tools.forEach { tool ->
+                            Text(
+                                tool.name,
+                                Modifier.padding(top = 8.dp),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            if (tool.description.isNotBlank()) {
+                                Text(
+                                    tool.description,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        null -> Unit
     }
 }
 
 @Composable
-private fun SystemPromptDialog(prompt: String, onDismiss: () -> Unit) {
+private fun FullScreenContextDetailDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     BackHandler(onBack = onDismiss)
     Dialog(
         onDismissRequest = onDismiss,
@@ -682,25 +743,34 @@ private fun SystemPromptDialog(prompt: String, onDismiss: () -> Unit) {
             DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Column(Modifier.fillMaxSize()) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    Modifier.fillMaxWidth()
+                        .padding(
+                            WindowInsets.safeDrawing
+                                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)
+                                .asPaddingValues()
+                        )
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
-                    Text("System prompt", style = MaterialTheme.typography.titleLarge)
+                    Text(title, style = MaterialTheme.typography.titleLarge)
                 }
                 HorizontalDivider()
-                Box(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-                    SelectionContainer {
-                        Text(
-                            prompt,
-                            Modifier.fillMaxWidth().padding(16.dp),
-                            style = MaterialTheme.typography.bodyMedium,
+                Box(
+                    Modifier.fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(
+                            detailScrollableInsets(WindowInsets.safeDrawing, WindowInsets.ime)
+                                .asPaddingValues()
                         )
-                    }
+                        .padding(16.dp)
+                ) {
+                    SelectionContainer { Column(Modifier.fillMaxWidth(), content = content) }
                 }
             }
         }
@@ -713,13 +783,14 @@ private fun UsageDetailRow(
     tokens: Long,
     percent: Int? = null,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
 ) {
     val modifier =
         if (onClick != null)
             Modifier.fillMaxWidth()
                 .defaultMinSize(minHeight = 48.dp)
                 .clickable(
-                    onClickLabel = "Show full system prompt",
+                    onClickLabel = onClickLabel ?: "Show details",
                     role = Role.Button,
                     onClick = onClick,
                 )
@@ -746,6 +817,11 @@ private fun UsageDetailRow(
 
 internal fun isSystemPromptExpandable(category: ContextCategory, systemPrompt: String?): Boolean =
     category.id == "system_prompt" && !systemPrompt.isNullOrBlank()
+
+internal fun isToolDefinitionsExpandable(
+    category: ContextCategory,
+    definitions: ToolDefinitions?,
+): Boolean = category.id == "tool_definitions" && definitions?.sections?.isNotEmpty() == true
 
 private fun Long.percentOf(total: Long): Int? =
     if (total > 0L) ((toDouble() / total) * 100).toInt().coerceIn(0, 100) else null
