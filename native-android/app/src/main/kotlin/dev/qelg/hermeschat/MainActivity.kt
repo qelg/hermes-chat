@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -588,6 +589,7 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
 
 @Composable
 private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit) {
+    var showSystemPrompt by rememberSaveable { mutableStateOf(false) }
     val context = usage?.context
     val window = usage?.currentContext
     val cumulative = usage?.cumulative
@@ -613,10 +615,15 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
                     )
                 } else {
                     context.categories.forEach { category ->
+                        val expandable = isSystemPromptExpandable(category, usage?.systemPrompt)
                         UsageDetailRow(
                             category.label,
                             category.tokens,
                             category.tokens.percentOf(max),
+                            onClick =
+                                if (expandable) {
+                                    { showSystemPrompt = true }
+                                } else null,
                         )
                     }
                 }
@@ -659,11 +666,66 @@ private fun TokenUsageBottomSheet(usage: TokenUsageState?, onDismiss: () -> Unit
             Spacer(Modifier.height(12.dp))
         }
     }
+    if (showSystemPrompt) {
+        usage?.systemPrompt?.let { prompt ->
+            SystemPromptDialog(prompt, onDismiss = { showSystemPrompt = false })
+        }
+    }
 }
 
 @Composable
-private fun UsageDetailRow(label: String, tokens: Long, percent: Int? = null) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+private fun SystemPromptDialog(prompt: String, onDismiss: () -> Unit) {
+    BackHandler(onBack = onDismiss)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties =
+            DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text("System prompt", style = MaterialTheme.typography.titleLarge)
+                }
+                HorizontalDivider()
+                Box(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                    SelectionContainer {
+                        Text(
+                            prompt,
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsageDetailRow(
+    label: String,
+    tokens: Long,
+    percent: Int? = null,
+    onClick: (() -> Unit)? = null,
+) {
+    val modifier =
+        if (onClick != null)
+            Modifier.fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .clickable(
+                    onClickLabel = "Show full system prompt",
+                    role = Role.Button,
+                    onClick = onClick,
+                )
+                .padding(vertical = 8.dp)
+        else Modifier.fillMaxWidth()
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
         Text(
             buildString {
@@ -672,8 +734,18 @@ private fun UsageDetailRow(label: String, tokens: Long, percent: Int? = null) {
             },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (onClick != null) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
+
+internal fun isSystemPromptExpandable(category: ContextCategory, systemPrompt: String?): Boolean =
+    category.id == "system_prompt" && !systemPrompt.isNullOrBlank()
 
 private fun Long.percentOf(total: Long): Int? =
     if (total > 0L) ((toDouble() / total) * 100).toInt().coerceIn(0, 100) else null

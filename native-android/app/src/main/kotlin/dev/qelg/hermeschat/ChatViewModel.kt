@@ -12,6 +12,22 @@ import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
 
+internal data class TokenUsageRefreshIdentity(
+    val connectionVersion: Long,
+    val selectionVersion: Long,
+    val runtimeId: String?,
+    val selectedId: String?,
+    val storedId: String?,
+)
+
+internal fun isCurrentTokenUsageRefresh(
+    expected: TokenUsageRefreshIdentity,
+    current: TokenUsageRefreshIdentity,
+): Boolean = expected == current
+
+internal fun TokenUsageState.clearPersistedTokenDetails(): TokenUsageState =
+    copy(cumulative = null, systemPrompt = null)
+
 internal suspend fun <T> runVoiceTranscription(
     setTranscribing: (Boolean) -> Unit,
     operation: suspend () -> T,
@@ -647,19 +663,28 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val runtime = runtimeId ?: return
         val selected = state.value.selectedId ?: return
         val stored = usageStoredId ?: selected
-        val version = selectionVersion
+        val identity =
+            TokenUsageRefreshIdentity(
+                connectionVersion,
+                selectionVersion,
+                runtime,
+                selected,
+                stored,
+            )
         usageJob?.cancel()
         usageJob =
             viewModelScope.launch {
                 val context = runCatching { api.contextBreakdown(runtime) }.getOrNull()
-                val cumulative = runCatching { api.conversationTokenUsage(stored) }.getOrNull()
-                if (
-                    client !== api ||
-                        selectionVersion != version ||
-                        runtimeId != runtime ||
-                        state.value.selectedId != selected ||
-                        (usageStoredId ?: selected) != stored
-                )
+                val details = runCatching { api.conversationTokenDetails(stored) }.getOrNull()
+                val currentIdentity =
+                    TokenUsageRefreshIdentity(
+                        connectionVersion,
+                        selectionVersion,
+                        runtimeId,
+                        state.value.selectedId,
+                        usageStoredId ?: state.value.selectedId,
+                    )
+                if (client !== api || !isCurrentTokenUsageRefresh(identity, currentIdentity))
                     return@launch
                 _state.update {
                     val current = it.tokenUsage ?: TokenUsageState()
@@ -667,7 +692,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         tokenUsage =
                             current.copy(
                                 context = context ?: current.context,
-                                cumulative = cumulative ?: current.cumulative,
+                                cumulative = details?.usage ?: current.cumulative,
+                                systemPrompt =
+                                    if (details != null) details.systemPrompt
+                                    else current.systemPrompt,
                             )
                     )
                 }
@@ -706,7 +734,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             ModelSelection(provider, model)
                         else it.modelCatalog.selected
                     val previousUsage =
-                        if (storedChanged) it.tokenUsage?.copy(cumulative = null) else it.tokenUsage
+                        if (storedChanged) it.tokenUsage?.clearPersistedTokenDetails()
+                        else it.tokenUsage
                     val usage =
                         if (liveUsage != null)
                             (previousUsage ?: TokenUsageState()).copy(

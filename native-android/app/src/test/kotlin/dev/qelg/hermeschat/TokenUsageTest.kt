@@ -1,12 +1,16 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ContextBreakdown
+import dev.qelg.hermeschat.data.ContextCategory
 import dev.qelg.hermeschat.data.CumulativeTokenUsage
 import dev.qelg.hermeschat.data.LiveTokenUsage
+import dev.qelg.hermeschat.data.TokenUsageState
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TokenUsageTest {
@@ -109,5 +113,57 @@ class TokenUsageTest {
         assertEquals(615L, combined.processedInputTokens)
         assertEquals(645L, combined.totalTokens)
         assertEquals(3, combined.apiCalls)
+    }
+
+    @Test
+    fun onlySystemPromptCategoryWithContentIsExpandable() {
+        val systemPrompt = ContextCategory("system_prompt", "System prompt", 1_000)
+        val memory = ContextCategory("memory", "Memory", 100)
+
+        assertTrue(isSystemPromptExpandable(systemPrompt, "Full prompt"))
+        assertFalse(isSystemPromptExpandable(systemPrompt, "  "))
+        assertFalse(isSystemPromptExpandable(memory, "Full prompt"))
+    }
+
+    @Test
+    fun storedSessionRotationClearsPersistedDetailsImmediately() {
+        val live = LiveTokenUsage(1_000, 10_000, 10, 200, 2)
+        val usage =
+            TokenUsageState(
+                cumulative =
+                    CumulativeTokenUsage.fromJson(
+                        Json.parseToJsonElement(
+                                """{"input_tokens":100,"output_tokens":20,"api_call_count":2}"""
+                            )
+                            .jsonObject
+                    ),
+                live = live,
+                systemPrompt = "Secret prompt",
+            )
+
+        val cleared = usage.clearPersistedTokenDetails()
+
+        assertNull(cleared.cumulative)
+        assertNull(cleared.systemPrompt)
+        assertEquals(live, cleared.live)
+    }
+
+    @Test
+    fun delayedUsageResponseIsRejectedAfterAnySessionBoundaryChanges() {
+        val expected =
+            TokenUsageRefreshIdentity(
+                connectionVersion = 1,
+                selectionVersion = 2,
+                runtimeId = "runtime-1",
+                selectedId = "selected-1",
+                storedId = "stored-1",
+            )
+
+        assertTrue(isCurrentTokenUsageRefresh(expected, expected))
+        assertFalse(isCurrentTokenUsageRefresh(expected, expected.copy(connectionVersion = 2)))
+        assertFalse(isCurrentTokenUsageRefresh(expected, expected.copy(selectionVersion = 3)))
+        assertFalse(isCurrentTokenUsageRefresh(expected, expected.copy(runtimeId = "runtime-2")))
+        assertFalse(isCurrentTokenUsageRefresh(expected, expected.copy(selectedId = "selected-2")))
+        assertFalse(isCurrentTokenUsageRefresh(expected, expected.copy(storedId = "stored-2")))
     }
 }

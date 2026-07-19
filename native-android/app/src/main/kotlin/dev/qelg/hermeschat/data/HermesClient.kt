@@ -295,8 +295,12 @@ class HermesClient(
     suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =
         CumulativeTokenUsage.fromJson(sessionDetail(storedSessionId))
 
-    suspend fun conversationTokenUsage(storedSessionId: String): CumulativeTokenUsage {
+    suspend fun conversationTokenUsage(storedSessionId: String): CumulativeTokenUsage =
+        conversationTokenDetails(storedSessionId).usage
+
+    suspend fun conversationTokenDetails(storedSessionId: String): ConversationTokenDetails {
         var detail = sessionDetail(storedSessionId)
+        val systemPrompt = detail.string("system_prompt")?.takeIf(String::isNotBlank)
         var total = CumulativeTokenUsage.fromJson(detail)
         val visited = mutableSetOf(storedSessionId)
         while (visited.size < 100) {
@@ -307,7 +311,7 @@ class HermesClient(
             total += CumulativeTokenUsage.fromJson(parent)
             detail = parent
         }
-        return total
+        return ConversationTokenDetails(total, systemPrompt)
     }
 
     private suspend fun sessionDetail(storedSessionId: String): JsonObject =
