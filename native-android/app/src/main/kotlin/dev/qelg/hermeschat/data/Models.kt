@@ -18,6 +18,7 @@ data class HermesSession(
     val runtimeId: String? = null,
     val parentSessionId: String? = null,
     val endReason: String? = null,
+    val model: String? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HermesSession {
@@ -44,10 +45,39 @@ data class HermesSession(
                         },
                 parentSessionId = value.string("parent_session_id"),
                 endReason = value.string("end_reason"),
+                model = value.string("model"),
             )
         }
     }
 }
+
+fun modelCatalogForSession(catalog: ModelCatalog, session: HermesSession): ModelCatalog =
+    catalog.selectedFor(session.model)
+
+fun sessionModelForLineage(
+    storedSessionId: String,
+    runtimeSessionId: String?,
+    sessions: List<HermesSession>,
+    overrides: Map<String, String>,
+): String? =
+    overrides[storedSessionId]
+        ?: runtimeSessionId?.let { runtime -> sessions.firstOrNull { it.id == runtime }?.model }
+        ?: sessions.firstOrNull { it.id == storedSessionId }?.model
+
+fun applySessionModelOverrides(
+    sessions: List<HermesSession>,
+    overrides: Map<String, String>,
+): List<HermesSession> =
+    sessions.map { session -> overrides[session.id]?.let { session.copy(model = it) } ?: session }
+
+fun sessionsWithModelSelection(
+    sessions: List<HermesSession>,
+    selectedId: String,
+    selection: ModelSelection,
+): List<HermesSession> =
+    sessions.map { session ->
+        if (session.id == selectedId) session.copy(model = selection.model) else session
+    }
 
 fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSession> {
     val needle = query.trim().lowercase()
@@ -153,7 +183,11 @@ fun canClearDraft(
 
 data class ModelSelection(val provider: String, val model: String)
 
-data class ModelOption(val id: String, val unavailable: Boolean = false)
+data class ModelOption(
+    val id: String,
+    val unavailable: Boolean = false,
+    val resolvedModel: String? = null,
+)
 
 data class ModelProvider(val slug: String, val name: String, val models: List<ModelOption>)
 
@@ -161,6 +195,18 @@ data class ModelCatalog(
     val selected: ModelSelection? = null,
     val providers: List<ModelProvider> = emptyList(),
 ) {
+    fun selectedFor(sessionModel: String?): ModelCatalog {
+        val options = providers.flatMap { provider -> provider.models.map { provider to it } }
+        val match =
+            sessionModel?.takeIf(String::isNotBlank)?.let { current ->
+                options.firstOrNull { (_, option) -> option.id == current }
+                    ?: options.firstOrNull { (_, option) -> option.resolvedModel == current }
+            } ?: options.firstOrNull()
+        return copy(
+            selected = match?.let { (provider, option) -> ModelSelection(provider.slug, option.id) }
+        )
+    }
+
     fun filtered(query: String): List<ModelProvider> {
         val needle = query.trim().lowercase()
         if (needle.isEmpty()) return providers

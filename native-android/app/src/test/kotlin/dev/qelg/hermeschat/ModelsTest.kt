@@ -8,6 +8,7 @@ import dev.qelg.hermeschat.data.ModelCatalog
 import dev.qelg.hermeschat.data.ModelSelection
 import dev.qelg.hermeschat.data.ToolValuePreview
 import dev.qelg.hermeschat.data.ToolValueRow
+import dev.qelg.hermeschat.data.applySessionModelOverrides
 import dev.qelg.hermeschat.data.canClearDraft
 import dev.qelg.hermeschat.data.canMarkSessionRead
 import dev.qelg.hermeschat.data.confirmedReadAt
@@ -16,9 +17,12 @@ import dev.qelg.hermeschat.data.formatSessionUpdate
 import dev.qelg.hermeschat.data.groupTimeline
 import dev.qelg.hermeschat.data.isSafeExternalUrl
 import dev.qelg.hermeschat.data.isSessionUpdateRead
+import dev.qelg.hermeschat.data.modelCatalogForSession
 import dev.qelg.hermeschat.data.modelSwitchValue
 import dev.qelg.hermeschat.data.prettyToolValue
 import dev.qelg.hermeschat.data.prioritizeSessionsWithDrafts
+import dev.qelg.hermeschat.data.sessionModelForLineage
+import dev.qelg.hermeschat.data.sessionsWithModelSelection
 import dev.qelg.hermeschat.data.sortSessionsForOverview
 import dev.qelg.hermeschat.data.toolCountBreakdown
 import dev.qelg.hermeschat.data.toolValuePreview
@@ -458,6 +462,19 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionDecodesItsPersistedModel() {
+        val session =
+            HermesSession.fromJson(
+                buildJsonObject {
+                    put("id", "chat")
+                    put("model", "deep")
+                }
+            )
+
+        assertEquals("deep", session.model)
+    }
+
+    @Test
     fun sessionActivityIsDecodedForLiveIndicators() {
         val session =
             HermesSession.fromJson(
@@ -468,6 +485,74 @@ class ModelsTest {
                 }
             )
         assertTrue(session.active)
+    }
+
+    @Test
+    fun switchingSessionsRestoresEachSessionsModelAndNeverCarriesThePreviousSelection() {
+        val catalog =
+            ModelCatalog(
+                selected = ModelSelection("api_server", "fast"),
+                providers =
+                    listOf(
+                        dev.qelg.hermeschat.data.ModelProvider(
+                            "api_server",
+                            "Hermes API Server",
+                            listOf(
+                                dev.qelg.hermeschat.data.ModelOption("default"),
+                                dev.qelg.hermeschat.data.ModelOption("fast"),
+                                dev.qelg.hermeschat.data.ModelOption("deep"),
+                            ),
+                        )
+                    ),
+            )
+
+        assertEquals(
+            ModelSelection("api_server", "deep"),
+            modelCatalogForSession(catalog, HermesSession("b", "B", model = "deep")).selected,
+        )
+        assertEquals(
+            ModelSelection("api_server", "default"),
+            modelCatalogForSession(catalog, HermesSession("c", "C")).selected,
+        )
+    }
+
+    @Test
+    fun resumedLineageUsesTheLatestCompressionChildsModelUnlessExplicitlyOverridden() {
+        val sessions =
+            listOf(
+                HermesSession("root", "Chat", model = "fast"),
+                HermesSession("tip", "Chat", parentSessionId = "root", model = "deep"),
+            )
+
+        assertEquals("deep", sessionModelForLineage("root", "tip", sessions, emptyMap()))
+        assertEquals(
+            "default",
+            sessionModelForLineage("root", "tip", sessions, mapOf("root" to "default")),
+        )
+    }
+
+    @Test
+    fun serverRefreshCannotOverwriteAnUnpersistedExplicitModelSelection() {
+        val staleServerSessions =
+            listOf(HermesSession("a", "A", model = "fast"), HermesSession("b", "B", model = "deep"))
+
+        assertEquals(
+            listOf("deep", "deep"),
+            applySessionModelOverrides(staleServerSessions, mapOf("a" to "deep")).map { it.model },
+        )
+    }
+
+    @Test
+    fun explicitModelSelectionOnlyChangesTheCurrentSession() {
+        val sessions =
+            listOf(HermesSession("a", "A", model = "fast"), HermesSession("b", "B", model = "deep"))
+
+        assertEquals(
+            listOf("default", "deep"),
+            sessionsWithModelSelection(sessions, "a", ModelSelection("api_server", "default")).map {
+                it.model
+            },
+        )
     }
 
     @Test

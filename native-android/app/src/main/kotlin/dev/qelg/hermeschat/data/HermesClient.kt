@@ -57,16 +57,23 @@ class HermesClient(
         connected = true
     }
 
-    suspend fun modelOptions(sessionId: String? = null): ModelCatalog {
+    suspend fun modelOptions(sessionModel: String? = null): ModelCatalog {
         val response = http("GET", "/v1/models")
-        val selected =
+        val models =
             (response["data"] as? JsonArray)
                 ?.mapNotNull { it as? JsonObject }
-                ?.firstNotNullOfOrNull { it.string("id")?.takeIf(String::isNotBlank) }
+                ?.mapNotNull { model ->
+                    model.string("id")?.takeIf(String::isNotBlank)?.let { id ->
+                        ModelOption(id = id, resolvedModel = model.string("root"))
+                    }
+                }
+                .orEmpty()
         return ModelCatalog(
-            selected = selected?.let { ModelSelection("api_server", it) },
-            providers = emptyList(),
-        )
+                providers =
+                    if (models.isEmpty()) emptyList()
+                    else listOf(ModelProvider("api_server", "Hermes API Server", models))
+            )
+            .selectedFor(sessionModel)
     }
 
     suspend fun history(sessionId: String): List<JsonObject> {
@@ -105,7 +112,7 @@ class HermesClient(
         return response["session"] as? JsonObject ?: error("Hermes returned no session")
     }
 
-    suspend fun submit(sessionId: String, text: String) {
+    suspend fun submit(sessionId: String, text: String, model: String? = null) {
         check(activeRunId == null && activeCall == null) { "A Hermes turn is already active" }
         activeSessionId = sessionId
         val started =
@@ -130,6 +137,7 @@ class HermesClient(
                     buildJsonObject {
                         put("input", text)
                         put("session_id", sessionId)
+                        model?.takeIf(String::isNotBlank)?.let { put("model", it) }
                         put("conversation_history", conversationHistory)
                     },
                 )
@@ -396,7 +404,10 @@ class HermesClient(
         return ToolDefinitions(sections, sections.sumOf { it.tools.size })
     }
 
-    suspend fun latestSessionId(sessionId: String): String {
+    suspend fun latestSessionId(sessionId: String): String =
+        latestSession(sessionId).string("id") ?: sessionId
+
+    suspend fun latestSession(sessionId: String): JsonObject {
         val rows = sessions()
         val descendants = mutableSetOf(sessionId)
         var changed: Boolean
@@ -413,11 +424,9 @@ class HermesClient(
                 val id = row.string("id")
                 id in descendants && rows.none { it.string("parent_session_id") == id }
             }
-        return leaves
-            .maxByOrNull {
-                it["last_active"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
-            }
-            ?.string("id") ?: sessionId
+        return leaves.maxByOrNull {
+            it["last_active"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
+        } ?: buildJsonObject { put("id", sessionId) }
     }
 
     suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =

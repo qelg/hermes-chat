@@ -205,7 +205,7 @@ class HermesClientTest {
             val events = mutableListOf<dev.qelg.hermeschat.data.GatewayEvent>()
             val collector = launch { client.events.take(5).toList(events) }
 
-            client.submit("api-1", "Hello")
+            client.submit("api-1", "Hello", "deep")
             withTimeout(5_000) { collector.join() }
 
             assertEquals(
@@ -235,6 +235,7 @@ class HermesClientTest {
             val runBody = runRequest.body.readUtf8()
             assertTrue(runBody.contains("\"input\":\"Hello\""))
             assertTrue(runBody.contains("\"session_id\":\"api-1\""))
+            assertTrue(runBody.contains("\"model\":\"deep\""))
             assertTrue(runBody.contains("\"conversation_history\""))
             assertEquals("/v1/runs/run-1/events", server.takeRequest().path)
             assertEquals(
@@ -431,10 +432,13 @@ class HermesClientTest {
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"object":"list","data":[{"id":"child","parent_session_id":"root","last_active":2},{"id":"tip","parent_session_id":"child","last_active":3}],"has_more":false}"""
+                    """{"object":"list","data":[{"id":"child","parent_session_id":"root","last_active":2},{"id":"tip","parent_session_id":"child","last_active":3,"model":"deep"}],"has_more":false}"""
                 ),
         ) { client, server ->
-            assertEquals("tip", client.latestSessionId("root"))
+            val latest = client.latestSession("root")
+
+            assertEquals("tip", latest["id"]?.jsonPrimitive?.contentOrNull)
+            assertEquals("deep", latest["model"]?.jsonPrimitive?.contentOrNull)
             assertEquals(
                 "/api/sessions?limit=200&offset=0&include_children=true",
                 server.takeRequest().path,
@@ -447,19 +451,26 @@ class HermesClientTest {
     }
 
     @Test
-    fun modelCatalogUsesApiServerModelsWithoutOfferingUnsupportedSwitches() = runBlocking {
+    fun modelCatalogExposesApiServerRoutesAndSelectsTheSessionsCurrentModel() = runBlocking {
         withClient(
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"object":"list","data":[{"id":"hermes-agent","object":"model","owned_by":"hermes-agent"}]}"""
+                    """{"object":"list","data":[{"id":"hermes-agent","root":"hermes-agent"},{"id":"fast","root":"openai/gpt-fast"},{"id":"deep","root":"anthropic/claude-deep"}]}"""
                 )
         ) { client, server ->
-            val catalog = client.modelOptions()
+            val catalog = client.modelOptions("anthropic/claude-deep")
 
-            assertEquals("hermes-agent", catalog.selected?.model)
+            assertEquals("deep", catalog.selected?.model)
             assertEquals("api_server", catalog.selected?.provider)
-            assertTrue(catalog.providers.isEmpty())
+            assertEquals(
+                listOf("hermes-agent", "fast", "deep"),
+                catalog.providers.single().models.map { it.id },
+            )
+            assertEquals(
+                "anthropic/claude-deep",
+                catalog.providers.single().models.last().resolvedModel,
+            )
             assertEquals("/v1/models", server.takeRequest().path)
         }
     }
