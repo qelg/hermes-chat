@@ -63,9 +63,6 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
 fun sortSessionsForOverview(sessions: List<HermesSession>): List<HermesSession> =
     sessions.sortedWith(compareByDescending { it.updatedAt?.let(::parseSessionUpdateInstant) })
 
-private val earliestSessionUpdate = java.time.Instant.parse("2000-01-01T00:00:00Z")
-private val latestSessionUpdateExclusive = java.time.Instant.parse("2100-01-01T00:00:00Z")
-
 private fun parseSessionUpdateInstant(value: String): java.time.Instant? {
     val parsed = runCatching { java.time.Instant.parse(value) }.getOrNull()
     if (parsed != null)
@@ -89,6 +86,36 @@ fun isSessionUpdateRead(session: HermesSession, readAt: String?): Boolean {
 
 fun canMarkSessionRead(historyLoadedFor: String?, selectedId: String?, sessionId: String): Boolean =
     historyLoadedFor == sessionId && selectedId == sessionId
+
+enum class SessionGroup(val label: String, val priority: Int) {
+    TODAY("Heute", 0),
+    YESTERDAY("Gestern", 1),
+    THIS_WEEK("Diese Woche", 2),
+    THIS_MONTH("Dieser Monat", 3),
+    OLDER("Älter", 4),
+    ARCHIVED("Archiv", 5),
+}
+
+data class GroupedSessions(
+    val group: SessionGroup,
+    val sessions: List<HermesSession>,
+)
+
+private val todayStart: java.time.Instant
+    get() = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant()
+
+private val yesterdayStart: java.time.Instant
+    get() = todayStart.minus(java.time.Duration.ofDays(1))
+
+private val weekStart: java.time.Instant
+    get() = todayStart.minus(java.time.Duration.ofDays(7))
+
+private val monthStart: java.time.Instant
+    get() = todayStart.minus(java.time.Duration.ofDays(30))
+
+private val earliestSessionUpdate = java.time.Instant.parse("2000-01-01T00:00:00Z")
+private val latestSessionUpdateExclusive = java.time.Instant.parse("2100-01-01T00:00:00Z")
 
 fun confirmedReadAt(
     session: HermesSession,
@@ -120,6 +147,37 @@ fun prioritizeSessionsWithDrafts(
     val sorted = sortSessionsForOverview(sessions)
     val (withDraft, withoutDraft) = sorted.partition { drafts[it.id]?.isNotBlank() == true }
     return withDraft + withoutDraft
+}
+
+fun sessionGroupFor(session: HermesSession): SessionGroup? {
+    val updated = session.updatedAt?.let(::parseSessionUpdateInstant) ?: return null
+    return when {
+        !updated.isBefore(todayStart) -> SessionGroup.TODAY
+        !updated.isBefore(yesterdayStart) -> SessionGroup.YESTERDAY
+        !updated.isBefore(weekStart) -> SessionGroup.THIS_WEEK
+        !updated.isBefore(monthStart) -> SessionGroup.THIS_MONTH
+        else -> SessionGroup.OLDER
+    }
+}
+
+fun groupSessions(
+    sessions: List<HermesSession>,
+    archivedIds: Set<String>,
+    showArchived: Boolean,
+): List<GroupedSessions> {
+    val sorted = sortSessionsForOverview(sessions)
+    val grouped = linkedMapOf<SessionGroup, MutableList<HermesSession>>()
+    sorted.forEach { session ->
+        val isArchived = session.id in archivedIds
+        if (isArchived && !showArchived) return@forEach
+        val group = if (isArchived) SessionGroup.ARCHIVED
+                    else sessionGroupFor(session) ?: SessionGroup.OLDER
+        grouped.getOrPut(group) { mutableListOf() }.add(session)
+    }
+    return grouped.entries
+        .sortedBy { (group, _) -> group.priority }
+        .map { (group, sessions) -> GroupedSessions(group, sessions) }
+        .filter { it.sessions.isNotEmpty() }
 }
 
 fun updateDrafts(
