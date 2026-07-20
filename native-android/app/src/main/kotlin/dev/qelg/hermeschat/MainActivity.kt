@@ -215,6 +215,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionPane(
     state: ChatUiState,
@@ -222,15 +223,25 @@ private fun SessionPane(
     modifier: Modifier,
     selected: () -> Unit,
 ) {
-    val sessions =
-        remember(state.sessions, state.search, state.drafts) {
-            prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts)
+    val grouped =
+        remember(state.sessions, state.search, state.drafts, state.archivedIds, state.showArchived) {
+            groupSessions(
+                prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts),
+                state.archivedIds,
+                state.showArchived,
+            )
         }
     Column(modifier) {
         TopAppBar(
             title = { Text("Sessions") },
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
+                IconButton({ vm.toggleShowArchived() }) {
+                    Icon(
+                        if (state.showArchived) Icons.Default.FolderOff else Icons.Default.Folder,
+                        if (state.showArchived) "Hide archived" else "Show archived",
+                    )
+                }
                 IconButton(vm::refresh) { Icon(Icons.Default.Refresh, "Refresh") }
                 IconButton(vm::checkForUpdate) {
                     Icon(Icons.Default.SystemUpdate, "Check for updates")
@@ -259,83 +270,125 @@ private fun SessionPane(
         }
         if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(Modifier.weight(1f)) {
-            items(sessions, key = { it.id }) { session ->
-                val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
-                val unread = state.unreadCounts[session.id] ?: 0
-                val updated = session.updatedAt?.let(::formatSessionUpdate)
-                val read = isSessionUpdateRead(session, state.readUpdates[session.id])
-                ListItem(
-                    headlineContent = { Text(session.title, maxLines = 1) },
-                    supportingContent = {
-                        Column {
-                            if (draft != null)
-                                Text(
-                                    "Draft · ${draft.trim()}",
-                                    maxLines = 2,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            else session.preview?.let { Text(it, maxLines = 2) }
-                            val kind =
-                                when {
-                                    session.source == "delegate_task" -> "Delegate task"
-                                    session.endReason == "compression" -> "Compression session"
-                                    session.parentSessionId != null -> "Child session"
-                                    else -> session.source
-                                }
-                            kind?.takeIf(String::isNotBlank)?.let {
-                                Text(
-                                    it,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                )
-                            }
-                            updated?.let {
-                                Text(
-                                    "Latest $it",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    },
-                    leadingContent = {
-                        if (session.active) Badge { Text("LIVE") }
-                        else
-                            Icon(
-                                if (session.id == state.selectedId) Icons.AutoMirrored.Filled.Chat
-                                else Icons.Default.History,
-                                null,
+            grouped.forEach { group ->
+                stickyHeader(key = "header-${group.group.name}") {
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 2.dp) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                group.group.label,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                    },
-                    trailingContent = {
-                        Column(horizontalAlignment = Alignment.End) {
-                            if (draft != null) Badge { Text("DRAFT") }
-                            if (unread > 0) {
-                                Badge { Text("$unread unread") }
-                            } else if (updated != null && !read) {
-                                Badge { Text("Unread") }
-                            } else if (updated != null && read) {
-                                Text(
-                                    "Read",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "${group.sessions.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
-                    },
-                    modifier =
-                        Modifier.clickable {
-                            vm.select(session)
-                            selected()
+                    }
+                }
+                items(group.sessions, key = { it.id }) { session ->
+                    val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
+                    val unread = state.unreadCounts[session.id] ?: 0
+                    val updated = session.updatedAt?.let(::formatSessionUpdate)
+                    val read = isSessionUpdateRead(session, state.readUpdates[session.id])
+                    ListItem(
+                        headlineContent = { Text(session.title, maxLines = 1) },
+                        supportingContent = {
+                            Column {
+                                if (draft != null)
+                                    Text(
+                                        "Draft · ${draft.trim()}",
+                                        maxLines = 2,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                else session.preview?.let { Text(it, maxLines = 2) }
+                                val kind =
+                                    when {
+                                        session.source == "delegate_task" -> "Delegate task"
+                                        session.endReason == "compression" -> "Compression session"
+                                        session.parentSessionId != null -> "Child session"
+                                        else -> session.source
+                                    }
+                                kind?.takeIf(String::isNotBlank)?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                    )
+                                }
+                                updated?.let {
+                                    Text(
+                                        "Latest $it",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         },
-                    colors =
-                        ListItemDefaults.colors(
-                            containerColor =
-                                if (session.id == state.selectedId)
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                else Color.Transparent
-                        ),
-                )
+                        leadingContent = {
+                            if (session.active) Badge { Text("LIVE") }
+                            else
+                                Icon(
+                                    if (session.id == state.selectedId)
+                                        Icons.AutoMirrored.Filled.Chat
+                                    else Icons.Default.History,
+                                    null,
+                                )
+                        },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (session.id in state.archivedIds) {
+                                    IconButton({ vm.unarchive(session.id) }) {
+                                        Icon(
+                                            Icons.Default.Unarchive,
+                                            "Unarchive",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                } else {
+                                    IconButton({ vm.archive(session.id) }) {
+                                        Icon(
+                                            Icons.Default.Archive,
+                                            "Archive",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    if (draft != null) Badge { Text("DRAFT") }
+                                    if (unread > 0) {
+                                        Badge { Text("$unread unread") }
+                                    } else if (updated != null && !read) {
+                                        Badge { Text("Unread") }
+                                    } else if (updated != null && read) {
+                                        Text(
+                                            "Read",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        modifier =
+                            Modifier.clickable {
+                                vm.select(session)
+                                selected()
+                            },
+                        colors =
+                            ListItemDefaults.colors(
+                                containerColor =
+                                    if (session.id == state.selectedId)
+                                        MaterialTheme.colorScheme.secondaryContainer
+                                    else Color.Transparent
+                            ),
+                    )
+                }
             }
         }
     }

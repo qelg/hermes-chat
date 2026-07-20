@@ -63,6 +63,8 @@ data class ChatUiState(
     val reconnectSeconds: Int? = null,
     val updateState: UpdateState = UpdateState(),
     val tokenUsage: TokenUsageState? = null,
+    val archivedIds: Set<String> = emptySet(),
+    val showArchived: Boolean = false,
 )
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
@@ -70,6 +72,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
     private val readStateStore = ReadStateStore(application)
+    private val archiveStore = ArchiveStore(application)
     private val _state = MutableStateFlow(ChatUiState(selectedId = savedState["selectedId"]))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
     val updateManager = UpdateManager(application)
@@ -92,6 +95,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     init {
         credentials.load()?.let(::connect)
         syncUpdateState()
+        _state.update { it.copy(archivedIds = archiveStore.load()) }
     }
 
     fun connect(config: ConnectionConfig) {
@@ -216,6 +220,20 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
+
+    fun archive(sessionId: String) {
+        archiveStore.archive(sessionId)
+        _state.update { it.copy(archivedIds = archiveStore.load()) }
+    }
+
+    fun unarchive(sessionId: String) {
+        archiveStore.unarchive(sessionId)
+        _state.update { it.copy(archivedIds = archiveStore.load()) }
+    }
+
+    fun toggleShowArchived() {
+        _state.update { it.copy(showArchived = !it.showArchived) }
+    }
 
     fun setDraft(text: String) {
         val sessionId = state.value.selectedId ?: return
