@@ -397,11 +397,7 @@ class HermesClient(
     }
 
     suspend fun latestSessionId(sessionId: String): String {
-        val response = http("GET", "/api/sessions?limit=500&include_children=true")
-        val rows =
-            ((response["data"] as? JsonArray) ?: (response["sessions"] as? JsonArray))
-                ?.mapNotNull { it as? JsonObject }
-                .orEmpty()
+        val rows = sessions()
         val descendants = mutableSetOf(sessionId)
         var changed: Boolean
         do {

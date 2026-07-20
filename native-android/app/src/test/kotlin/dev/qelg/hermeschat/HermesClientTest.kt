@@ -237,7 +237,10 @@ class HermesClientTest {
             assertTrue(runBody.contains("\"session_id\":\"api-1\""))
             assertTrue(runBody.contains("\"conversation_history\""))
             assertEquals("/v1/runs/run-1/events", server.takeRequest().path)
-            assertEquals("/api/sessions?limit=500&include_children=true", server.takeRequest().path)
+            assertEquals(
+                "/api/sessions?limit=200&offset=0&include_children=true",
+                server.takeRequest().path,
+            )
         }
     }
 
@@ -304,7 +307,7 @@ class HermesClientTest {
                                 .setHeader("Content-Type", "application/json")
                                 .setBody("""{"run_id":"run-stop","status":"stopping"}""")
                         }
-                        "/api/sessions?limit=500&include_children=true" ->
+                        "/api/sessions?limit=200&offset=0&include_children=true" ->
                             MockResponse()
                                 .setHeader("Content-Type", "application/json")
                                 .setBody("""{"object":"list","data":[{"id":"api-1"}]}""")
@@ -330,7 +333,7 @@ class HermesClientTest {
             assertTrue("/v1/runs/run-stop/stop" in paths)
             assertTrue(
                 paths.indexOf("/v1/runs/run-stop/stop") <
-                    paths.indexOf("/api/sessions?limit=500&include_children=true")
+                    paths.indexOf("/api/sessions?limit=200&offset=0&include_children=true")
             )
         } finally {
             releaseEvents.countDown()
@@ -382,7 +385,7 @@ class HermesClientTest {
                                     """
                                         .trimIndent()
                                 )
-                        request.path == "/api/sessions?limit=500&include_children=true" ->
+                        request.path == "/api/sessions?limit=200&offset=0&include_children=true" ->
                             MockResponse()
                                 .setHeader("Content-Type", "application/json")
                                 .setBody("""{"object":"list","data":[{"id":"api-1"}]}""")
@@ -418,16 +421,28 @@ class HermesClientTest {
     }
 
     @Test
-    fun latestSessionIdFollowsCompressionChildrenToNewestLeaf() = runBlocking {
+    fun latestSessionIdFollowsCompressionChildrenAcrossAllPages() = runBlocking {
         withClient(
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"object":"list","data":[{"id":"root","last_active":1},{"id":"child","parent_session_id":"root","last_active":2},{"id":"tip","parent_session_id":"child","last_active":3}]}"""
-                )
+                    """{"object":"list","data":[{"id":"root","last_active":1}],"has_more":true}"""
+                ),
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","data":[{"id":"child","parent_session_id":"root","last_active":2},{"id":"tip","parent_session_id":"child","last_active":3}],"has_more":false}"""
+                ),
         ) { client, server ->
             assertEquals("tip", client.latestSessionId("root"))
-            assertEquals("/api/sessions?limit=500&include_children=true", server.takeRequest().path)
+            assertEquals(
+                "/api/sessions?limit=200&offset=0&include_children=true",
+                server.takeRequest().path,
+            )
+            assertEquals(
+                "/api/sessions?limit=200&offset=200&include_children=true",
+                server.takeRequest().path,
+            )
         }
     }
 
