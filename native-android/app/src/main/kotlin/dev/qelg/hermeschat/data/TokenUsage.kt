@@ -97,6 +97,21 @@ data class CumulativeTokenUsage(
         )
 
     companion object {
+        fun fromJsonOrNull(value: JsonObject): CumulativeTokenUsage? =
+            if (
+                listOf(
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "reasoning_tokens",
+                        "api_call_count",
+                    )
+                    .any(value::containsKey)
+            )
+                fromJson(value)
+            else null
+
         fun fromJson(value: JsonObject): CumulativeTokenUsage =
             CumulativeTokenUsage(
                 inputTokens = value.long("input_tokens"),
@@ -161,6 +176,7 @@ data class LiveTokenUsage(
     companion object {
         fun fromSessionInfo(value: JsonObject): LiveTokenUsage? {
             val usage = value["usage"] as? JsonObject ?: return null
+            if (usage.long("context_max") <= 0L) return null
             return LiveTokenUsage(
                 contextUsed = usage.long("context_used"),
                 contextMax = usage.long("context_max"),
@@ -196,4 +212,12 @@ data class TokenUsageState(
                 ?.takeIf { it.contextMax > 0L }
                 ?.let { ContextWindow(it.contextUsed, it.contextMax, it.usedPercent) }
         }
+}
+
+data class UsageBarData(val context: ContextWindow?, val totalTokens: Long?)
+
+fun TokenUsageState.usageBarData(): UsageBarData? {
+    val context = currentContext
+    val total = cumulative?.totalTokens
+    return if (context != null || total != null) UsageBarData(context, total) else null
 }

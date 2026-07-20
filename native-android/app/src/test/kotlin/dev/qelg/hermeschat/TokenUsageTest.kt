@@ -8,6 +8,7 @@ import dev.qelg.hermeschat.data.TokenUsageState
 import dev.qelg.hermeschat.data.ToolDefinitions
 import dev.qelg.hermeschat.data.ToolSection
 import dev.qelg.hermeschat.data.ToolSummary
+import dev.qelg.hermeschat.data.usageBarData
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -82,6 +83,19 @@ class TokenUsageTest {
     }
 
     @Test
+    fun runUsageWithoutContextWindowIsNotTreatedAsLiveContext() {
+        val usage =
+            LiveTokenUsage.fromSessionInfo(
+                Json.parseToJsonElement(
+                        """{"usage":{"input_tokens":420,"output_tokens":80,"total_tokens":500}}"""
+                    )
+                    .jsonObject
+            )
+
+        assertNull(usage)
+    }
+
+    @Test
     fun freshLiveOccupancyWinsOverAnOlderContextBreakdown() {
         val state =
             dev.qelg.hermeschat.data.TokenUsageState(
@@ -92,6 +106,26 @@ class TokenUsageTest {
         assertEquals(65_000L, state.currentContext?.used)
         assertEquals(100_000L, state.currentContext?.max)
         assertEquals(65, state.currentContext?.percent)
+    }
+
+    @Test
+    fun cumulativeUsageKeepsUsageBarAccessibleWithoutContextWindow() {
+        val state =
+            TokenUsageState(
+                cumulative =
+                    CumulativeTokenUsage.fromJson(
+                        Json.parseToJsonElement(
+                                """{"input_tokens":100,"output_tokens":20,"cache_read_tokens":300,"cache_write_tokens":10}"""
+                            )
+                            .jsonObject
+                    )
+            )
+
+        val bar = state.usageBarData()
+
+        assertEquals(null, bar?.context)
+        assertEquals(430L, bar?.totalTokens)
+        assertNull(TokenUsageState().usageBarData())
     }
 
     @Test

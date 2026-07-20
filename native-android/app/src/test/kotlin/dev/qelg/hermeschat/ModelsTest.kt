@@ -70,6 +70,42 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionTokenUsageFieldsAreDecodedFromApiMetadata() {
+        val session =
+            HermesSession.fromJson(
+                buildJsonObject {
+                    put("id", "usage")
+                    put("input_tokens", 100)
+                    put("output_tokens", 20)
+                    put("cache_read_tokens", 300)
+                    put("cache_write_tokens", 10)
+                    put("reasoning_tokens", 5)
+                    put("estimated_cost_usd", 0.42)
+                    put("actual_cost_usd", 0.4)
+                    put("api_call_count", 2)
+                }
+            )
+
+        assertEquals(100L, session.inputTokens)
+        assertEquals(20L, session.outputTokens)
+        assertEquals(300L, session.cacheReadTokens)
+        assertEquals(10L, session.cacheWriteTokens)
+        assertEquals(5L, session.reasoningTokens)
+        assertEquals(0.42, session.estimatedCostUsd!!, 0.0)
+        assertEquals(0.4, session.actualCostUsd!!, 0.0)
+        assertEquals(2, session.apiCallCount)
+        assertEquals(430L, session.cumulativeTokenUsage?.totalTokens)
+        assertEquals(430L, initialTokenUsage(session)?.cumulative?.totalTokens)
+    }
+
+    @Test
+    fun sessionWithoutReportedTokenFieldsHasNoCumulativeUsage() {
+        val session = HermesSession.fromJson(buildJsonObject { put("id", "empty") })
+
+        assertEquals(null, session.cumulativeTokenUsage)
+    }
+
+    @Test
     fun sessionListActivityFieldsAreDecoded() {
         val current =
             HermesSession.fromJson(

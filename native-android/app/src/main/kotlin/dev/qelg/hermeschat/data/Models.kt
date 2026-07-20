@@ -19,6 +19,15 @@ data class HermesSession(
     val parentSessionId: String? = null,
     val endReason: String? = null,
     val model: String? = null,
+    val inputTokens: Long = 0L,
+    val outputTokens: Long = 0L,
+    val cacheReadTokens: Long = 0L,
+    val cacheWriteTokens: Long = 0L,
+    val reasoningTokens: Long = 0L,
+    val estimatedCostUsd: Double? = null,
+    val actualCostUsd: Double? = null,
+    val apiCallCount: Int = 0,
+    val cumulativeTokenUsage: CumulativeTokenUsage? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HermesSession {
@@ -46,6 +55,15 @@ data class HermesSession(
                 parentSessionId = value.string("parent_session_id"),
                 endReason = value.string("end_reason"),
                 model = value.string("model"),
+                inputTokens = value["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
+                outputTokens = value["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
+                cacheReadTokens = value["cache_read_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
+                cacheWriteTokens = value["cache_write_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
+                reasoningTokens = value["reasoning_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
+                estimatedCostUsd = value["estimated_cost_usd"]?.jsonPrimitive?.doubleOrNull,
+                actualCostUsd = value["actual_cost_usd"]?.jsonPrimitive?.doubleOrNull,
+                apiCallCount = value["api_call_count"]?.jsonPrimitive?.intOrNull ?: 0,
+                cumulativeTokenUsage = CumulativeTokenUsage.fromJsonOrNull(value),
             )
         }
     }

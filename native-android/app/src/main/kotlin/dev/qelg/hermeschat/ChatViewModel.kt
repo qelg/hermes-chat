@@ -28,6 +28,9 @@ internal fun isCurrentTokenUsageRefresh(
 internal fun TokenUsageState.clearPersistedTokenDetails(): TokenUsageState =
     copy(cumulative = null, systemPrompt = null)
 
+internal fun initialTokenUsage(session: HermesSession): TokenUsageState? =
+    session.cumulativeTokenUsage?.let { TokenUsageState(cumulative = it) }
+
 internal suspend fun <T> runVoiceTranscription(
     setTranscribing: (Boolean) -> Unit,
     operation: suspend () -> T,
@@ -483,7 +486,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 active = false,
                 error = null,
                 reconnectSeconds = null,
-                tokenUsage = null,
+                tokenUsage = initialTokenUsage(session),
                 modelCatalog = modelCatalogForSession(it.modelCatalog, session),
                 treeParentId = null,
             )

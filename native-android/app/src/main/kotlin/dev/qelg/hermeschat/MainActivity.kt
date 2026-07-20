@@ -781,8 +781,26 @@ private fun ChatPane(
 
 @Composable
 private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
+    val bar = usage.usageBarData() ?: return
     val context = usage.context
-    val window = usage.currentContext ?: return
+    val window = bar.context
+    if (window == null) {
+        Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Usage", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${formatTokenCount(bar.totalTokens ?: 0L)} tokens",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
     val used = window.used
     val max = window.max
     val estimatedBase = context?.baseTokens ?: 0L
