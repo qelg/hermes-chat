@@ -2,51 +2,58 @@ package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ConnectionConfig
 import dev.qelg.hermeschat.data.HermesClient
-import dev.qelg.hermeschat.data.ModelSelection
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HermesClientTest {
     @Test
-    fun sessionsUseRestResourceAndDecodeRichListData() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
+    fun connectUsesApiCapabilitiesWithBearerAuthentication() = runBlocking {
+        withClient(
             MockResponse()
-                .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"object":"list","data":[{"id":"stored-1","title":"REST session","last_active":1784390400,"source":"cli","preview":"More metadata","message_count":12}],"limit":200,"offset":0,"has_more":false}"""
+                    """{"object":"hermes.api_server.capabilities","platform":"hermes-agent","features":{"session_resources":true,"session_chat_streaming":true}}"""
                 )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
+        ) { client, server ->
+            client.connect()
+
+            val request = server.takeRequest()
+            assertEquals("/v1/capabilities", request.path)
+            assertEquals("Bearer api-key", request.getHeader("Authorization"))
+            assertEquals(null, request.getHeader("X-Hermes-Session-Token"))
+        }
+    }
+
+    @Test
+    fun sessionsUseRestResourceAndDecodeRichListData() = runBlocking {
+        withClient(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","data":[{"id":"stored-1","title":"REST session","last_active":1784390400,"source":"api_server","preview":"More metadata","message_count":12}],"limit":200,"offset":0,"has_more":false}"""
+                )
+        ) { client, server ->
             val sessions = client.sessions()
 
             assertEquals(1, sessions.size)
@@ -57,89 +64,191 @@ class HermesClientTest {
             )
             val request = server.takeRequest()
             assertEquals("/api/sessions?limit=200", request.path)
-            assertEquals("test", request.getHeader("X-Hermes-Session-Token"))
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+            assertEquals("Bearer api-key", request.getHeader("Authorization"))
         }
     }
 
     @Test
-    fun modelCatalogAndSessionSwitchUseDesktopGatewayContract() = runBlocking {
-        val server = MockWebServer()
-        val requests = mutableListOf<JsonObject>()
-        server.enqueue(
+    fun createSessionUsesRestResourceAndUnwrapsSession() = runBlocking {
+        withClient(
             MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onMessage(webSocket: WebSocket, text: String) {
-                            val request = Json.parseToJsonElement(text).jsonObject
-                            synchronized(requests) { requests += request }
-                            val id = request["id"]!!.jsonPrimitive.content
-                            val method = request["method"]!!.jsonPrimitive.content
-                            val result =
-                                if (method == "model.options")
-                                    """{"model":"gpt-5.6-sol","provider":"openai-codex","providers":[{"slug":"openai-codex","name":"OpenAI Codex","authenticated":true,"models":["gpt-5.6-sol"]}]}"""
-                                else """{"key":"model","value":"gpt-5.6-sol"}"""
-                            webSocket.send("""{"jsonrpc":"2.0","id":"$id","result":$result}""")
-                        }
-
-                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                            webSocket.close(code, reason)
-                        }
-                    }
+                .setResponseCode(201)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"hermes.session","session":{"id":"api-1","title":"Untitled session","source":"api_server"}}"""
                 )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
-            val catalog = client.modelOptions("runtime-1")
-            client.selectModel("runtime-1", ModelSelection("openai-codex", "gpt-5.6-sol"))
+        ) { client, server ->
+            val session = client.createSession()
 
-            assertEquals("gpt-5.6-sol", catalog.selected?.model)
-            val modelParams = requests[0]["params"]!!.jsonObject
-            assertEquals("runtime-1", modelParams["session_id"]!!.jsonPrimitive.content)
-            val switchParams = requests[1]["params"]!!.jsonObject
-            assertEquals("model", switchParams["key"]!!.jsonPrimitive.content)
+            assertEquals("api-1", session["id"]?.jsonPrimitive?.contentOrNull)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/sessions", request.path)
+            assertEquals("{}", request.body.readUtf8())
+        }
+    }
+
+    @Test
+    fun submitUsesControllableRunsAndMapsSseEventsIntoTimelineContract() = runBlocking {
+        withClient(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"object":"list","data":[{"role":"assistant","content":"Earlier"}]}"""),
+            MockResponse()
+                .setResponseCode(202)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"run_id":"run-1","status":"started"}"""),
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    data: {"event":"message.delta","run_id":"run-1","delta":"Hel"}
+
+                    data: {"event":"tool.started","run_id":"run-1","tool":"read_file","preview":"README.md"}
+
+                    data: {"event":"tool.completed","run_id":"run-1","tool":"read_file","duration":0.1,"error":false}
+
+                    data: {"event":"run.completed","run_id":"run-1","output":"Hello","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}
+
+                    """
+                        .trimIndent()
+                ),
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"object":"list","data":[{"id":"api-1","last_active":10}]}"""),
+        ) { client, server ->
+            val events = mutableListOf<dev.qelg.hermeschat.data.GatewayEvent>()
+            val collector = launch { client.events.take(5).toList(events) }
+
+            client.submit("api-1", "Hello")
+            withTimeout(5_000) { collector.join() }
+
             assertEquals(
-                "gpt-5.6-sol --provider openai-codex --session",
-                switchParams["value"]!!.jsonPrimitive.content,
+                listOf(
+                    "message.delta",
+                    "tool.start",
+                    "tool.complete",
+                    "message.complete",
+                    "session.inactive",
+                ),
+                events.map { it.type },
             )
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+            assertEquals("Hel", events[0].payload["text"]?.jsonPrimitive?.contentOrNull)
+            assertEquals("read_file", events[1].payload["name"]?.jsonPrimitive?.contentOrNull)
+            assertTrue(
+                events[1].payload["tool_call_id"]?.jsonPrimitive?.contentOrNull?.isNotBlank() ==
+                    true
+            )
+            assertEquals(events[1].payload["tool_call_id"], events[2].payload["tool_call_id"])
+            assertEquals("Hello", events[3].payload["text"]?.jsonPrimitive?.contentOrNull)
+
+            val historyRequest = server.takeRequest()
+            assertEquals("/api/sessions/api-1/messages", historyRequest.path)
+            val runRequest = server.takeRequest()
+            assertEquals("/v1/runs", runRequest.path)
+            assertEquals("Bearer api-key", runRequest.getHeader("Authorization"))
+            val runBody = runRequest.body.readUtf8()
+            assertTrue(runBody.contains("\"input\":\"Hello\""))
+            assertTrue(runBody.contains("\"session_id\":\"api-1\""))
+            assertTrue(runBody.contains("\"conversation_history\""))
+            assertEquals("/v1/runs/run-1/events", server.takeRequest().path)
+            assertEquals("/api/sessions?limit=500&include_children=true", server.takeRequest().path)
         }
     }
 
     @Test
-    fun transcriptionTimeoutExplainsHowToRecover() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
+    fun submitRejectsEventStreamEofWithoutTerminalRunEvent() = runBlocking {
+        withClient(
             MockResponse()
-                .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
-                .setBody("""{"transcript":"Too late"}""")
-                .setBodyDelay(150, TimeUnit.MILLISECONDS)
-        )
+                .setBody("""{"object":"list","data":[]}"""),
+            MockResponse()
+                .setResponseCode(202)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"run_id":"run-cut","status":"started"}"""),
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    data: {"event":"message.delta","run_id":"run-cut","delta":"partial"}
+
+                    """
+                        .trimIndent()
+                ),
+        ) { client, _ ->
+            val error = runCatching { client.submit("api-1", "Hello") }.exceptionOrNull()
+
+            assertTrue(error?.message.orEmpty().contains("before a terminal event"))
+        }
+    }
+
+    @Test
+    fun interruptStopsTheServerRunBeforeClosingItsEventStream() = runBlocking {
+        val server = MockWebServer()
+        val eventsStarted = CountDownLatch(1)
+        val releaseEvents = CountDownLatch(1)
+        server.dispatcher =
+            object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    when (request.path) {
+                        "/api/sessions/api-1/messages" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"object":"list","data":[]}""")
+                        "/v1/runs" ->
+                            MockResponse()
+                                .setResponseCode(202)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"run_id":"run-stop","status":"started"}""")
+                        "/v1/runs/run-stop/events" -> {
+                            eventsStarted.countDown()
+                            releaseEvents.await(5, TimeUnit.SECONDS)
+                            MockResponse()
+                                .setHeader("Content-Type", "text/event-stream")
+                                .setBody(
+                                    """
+                                    data: {"event":"run.cancelled","run_id":"run-stop"}
+
+                                    """
+                                        .trimIndent()
+                                )
+                        }
+                        "/v1/runs/run-stop/stop" -> {
+                            releaseEvents.countDown()
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"run_id":"run-stop","status":"stopping"}""")
+                        }
+                        "/api/sessions?limit=500&include_children=true" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"object":"list","data":[{"id":"api-1"}]}""")
+                        else -> MockResponse().setResponseCode(404)
+                    }
+            }
         server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client =
-            HermesClient(
-                ConnectionConfig(server.url("/").toString(), token = "test"),
-                scope,
-                transcriptionTimeoutMillis = 50,
-            )
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "api-key"), scope)
         try {
-            val error =
-                runCatching { client.transcribe(byteArrayOf(1, 2, 3), "audio/mp4") }
-                    .exceptionOrNull()
-            assertTrue(error?.message.orEmpty().contains("Voice transcription timed out"))
-            assertTrue(error?.message.orEmpty().contains("try again", ignoreCase = true))
+            var failure: Throwable? = null
+            val turn = launch {
+                runCatching { client.submit("api-1", "Long task") }.onFailure { failure = it }
+            }
+
+            assertTrue(withContext(Dispatchers.IO) { eventsStarted.await(5, TimeUnit.SECONDS) })
+            client.interrupt()
+            withTimeout(5_000) { turn.join() }
+
+            assertEquals(null, failure)
+            val paths = (1..5).map { server.takeRequest().path }
+            assertTrue("/v1/runs/run-stop/stop" in paths)
+            assertTrue(
+                paths.indexOf("/v1/runs/run-stop/stop") <
+                    paths.indexOf("/api/sessions?limit=500&include_children=true")
+            )
         } finally {
+            releaseEvents.countDown()
             client.close()
             scope.cancel()
             server.shutdown()
@@ -147,30 +256,76 @@ class HermesClientTest {
     }
 
     @Test
-    fun transcriptionCanOutliveTheDefaultHttpReadTimeout() = runBlocking {
+    fun delayedStopFailureStillClearsRunForTheNextSubmission() = runBlocking {
         val server = MockWebServer()
-        server.enqueue(
-            MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "application/json")
-                .setBody("""{"transcript":"Long recording transcript"}""")
-                .setBodyDelay(150, TimeUnit.MILLISECONDS)
-        )
+        val firstRunRequested = CountDownLatch(1)
+        val releaseFirstRun = CountDownLatch(1)
+        val runCount = AtomicInteger()
+        server.dispatcher =
+            object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    when {
+                        request.path == "/api/sessions/api-1/messages" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"object":"list","data":[]}""")
+                        request.path == "/v1/runs" && runCount.incrementAndGet() == 1 -> {
+                            firstRunRequested.countDown()
+                            releaseFirstRun.await(5, TimeUnit.SECONDS)
+                            MockResponse()
+                                .setResponseCode(202)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"run_id":"run-stop-fails","status":"started"}""")
+                        }
+                        request.path == "/v1/runs" ->
+                            MockResponse()
+                                .setResponseCode(202)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"run_id":"run-next","status":"started"}""")
+                        request.path == "/v1/runs/run-stop-fails/stop" ->
+                            MockResponse()
+                                .setResponseCode(500)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"error":"stop failed"}""")
+                        request.path == "/v1/runs/run-next/events" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "text/event-stream")
+                                .setBody(
+                                    """
+                                    data: {"event":"run.completed","run_id":"run-next","output":"done"}
+
+                                    """
+                                        .trimIndent()
+                                )
+                        request.path == "/api/sessions?limit=500&include_children=true" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"object":"list","data":[{"id":"api-1"}]}""")
+                        else -> MockResponse().setResponseCode(404)
+                    }
+            }
         server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val httpClient = OkHttpClient.Builder().readTimeout(50, TimeUnit.MILLISECONDS).build()
         val client =
-            HermesClient(
-                ConnectionConfig(server.url("/").toString(), token = "test"),
-                scope,
-                httpClient,
-            )
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "api-key"), scope)
         try {
-            assertEquals(
-                "Long recording transcript",
-                client.transcribe(byteArrayOf(1, 2, 3), "audio/mp4"),
-            )
+            var firstFailure: Throwable? = null
+            val first = launch {
+                runCatching { client.submit("api-1", "first") }.onFailure { firstFailure = it }
+            }
+            assertTrue(withContext(Dispatchers.IO) { firstRunRequested.await(5, TimeUnit.SECONDS) })
+            client.interrupt()
+            releaseFirstRun.countDown()
+            withTimeout(5_000) { first.join() }
+            assertTrue(firstFailure?.message.orEmpty().contains("Hermes HTTP 500"))
+
+            client.submit("api-1", "second")
+
+            val paths = (1..7).map { server.takeRequest().path }
+            assertTrue("/v1/runs/run-stop-fails/stop" in paths)
+            assertTrue("/v1/runs/run-next/events" in paths)
         } finally {
+            releaseFirstRun.countDown()
             client.close()
             scope.cancel()
             server.shutdown()
@@ -178,201 +333,92 @@ class HermesClientTest {
     }
 
     @Test
-    fun historyTreatsNullMessagesAsEmpty() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
+    fun latestSessionIdFollowsCompressionChildrenToNewestLeaf() = runBlocking {
+        withClient(
             MockResponse()
-                .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
-                .setBody("""{"messages":null}""")
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
-            assertEquals(emptyList<JsonObject>(), client.history("existing-session"))
-            assertEquals("/api/sessions/existing-session/messages", server.takeRequest().path)
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+                .setBody(
+                    """{"object":"list","data":[{"id":"root","last_active":1},{"id":"child","parent_session_id":"root","last_active":2},{"id":"tip","parent_session_id":"child","last_active":3}]}"""
+                )
+        ) { client, server ->
+            assertEquals("tip", client.latestSessionId("root"))
+            assertEquals("/api/sessions?limit=500&include_children=true", server.takeRequest().path)
         }
     }
 
     @Test
-    fun historyReadsDataFieldWhenMessagesIsAbsent() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
+    fun modelCatalogUsesApiServerModelsWithoutOfferingUnsupportedSwitches() = runBlocking {
+        withClient(
             MockResponse()
-                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","data":[{"id":"hermes-agent","object":"model","owned_by":"hermes-agent"}]}"""
+                )
+        ) { client, server ->
+            val catalog = client.modelOptions()
+
+            assertEquals("hermes-agent", catalog.selected?.model)
+            assertEquals("api_server", catalog.selected?.provider)
+            assertTrue(catalog.providers.isEmpty())
+            assertEquals("/v1/models", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun historyReadsApiServerDataField() = runBlocking {
+        withClient(
+            MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
                     """{"object":"list","session_id":"s1","data":[{"role":"assistant","content":"Hello","timestamp":"2026-07-17T12:00:00Z"}]}"""
                 )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
+        ) { client, server ->
             val history = client.history("existing-session")
+
             assertEquals(1, history.size)
             assertEquals("assistant", history[0]["role"]?.jsonPrimitive?.contentOrNull)
             assertEquals("Hello", history[0]["content"]?.jsonPrimitive?.contentOrNull)
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+            assertEquals("/api/sessions/existing-session/messages", server.takeRequest().path)
         }
     }
 
     @Test
-    fun websocketBurstIsDeliveredWithoutDroppingEvents() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
+    fun historyTreatsNullDataAsEmpty() = runBlocking {
+        withClient(
             MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onOpen(webSocket: WebSocket, response: Response) {
-                            repeat(200) { index ->
-                                webSocket.send(
-                                    """{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"runtime","payload":{"text":"$index"}}}"""
-                                )
-                            }
-                        }
-
-                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                            webSocket.close(code, reason)
-                        }
-                    }
-                )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
-            val events = mutableListOf<dev.qelg.hermeschat.data.GatewayEvent>()
-            val collector = launch(Dispatchers.Default) { client.events.take(200).toList(events) }
-            client.connect()
-            withTimeout(5_000) { collector.join() }
-            assertEquals(
-                (0 until 200).map(Int::toString),
-                events.map { it.payload["text"]?.toString()?.trim('"') },
-            )
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"object":"list","data":null}""")
+        ) { client, _ ->
+            assertEquals(emptyList<JsonObject>(), client.history("existing-session"))
         }
     }
 
     @Test
-    fun connectNowInterruptsBackoffAndRestoresConnection() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
-            MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onOpen(webSocket: WebSocket, response: Response) {
-                            webSocket.close(1012, "restart")
-                        }
-                    }
-                )
-        )
-        server.enqueue(
-            MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                            webSocket.close(code, reason)
-                        }
-                    }
-                )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        val events = Channel<dev.qelg.hermeschat.data.GatewayEvent>(Channel.UNLIMITED)
-        val collector = scope.launch { client.events.collect { events.send(it) } }
-        try {
-            client.connect()
-            assertEquals("connection.lost", withTimeout(5_000) { events.receive() }.type)
-            val scheduled = withTimeout(5_000) { events.receive() }
-            assertEquals("connection.retry_scheduled", scheduled.type)
-            assertEquals("1", scheduled.payload["seconds"]?.jsonPrimitive?.content)
-
-            client.reconnectNow()
-
-            assertEquals("connection.retry_started", withTimeout(5_000) { events.receive() }.type)
-            assertEquals("connection.restored", withTimeout(5_000) { events.receive() }.type)
-            assertEquals(2, server.requestCount)
-        } finally {
-            collector.cancel()
-            client.close()
-            scope.cancel()
-            server.shutdown()
-        }
-    }
-
-    @Test
-    fun closeCancelsPendingReconnect() = runBlocking {
-        val server = MockWebServer()
-        server.enqueue(
-            MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onOpen(webSocket: WebSocket, response: Response) {
-                            webSocket.close(1012, "restart")
-                        }
-                    }
-                )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
-            client.connect()
-            withTimeout(5_000) { client.events.take(1).toList() }
-            client.close()
-            TimeUnit.MILLISECONDS.sleep(1_250)
-            assertEquals(1, server.requestCount)
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
-        }
-    }
-
-    @Test
-    fun conversationTokenUsageTraversesOnlyCompressionParents() = runBlocking {
+    fun conversationTokenUsageUnwrapsApiSessionsAndTraversesCompressionParents() = runBlocking {
         val server = MockWebServer()
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"id":"tip","parent_session_id":"root","system_prompt":"System instructions\nSecond line","input_tokens":50,"output_tokens":10,"cache_read_tokens":150,"cache_write_tokens":5,"api_call_count":1}"""
+                    """{"object":"hermes.session","session":{"id":"tip","parent_session_id":"root","input_tokens":50,"output_tokens":10,"cache_read_tokens":150,"cache_write_tokens":5,"api_call_count":1,"has_system_prompt":true}}"""
                 )
         )
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"id":"root","end_reason":"compression","input_tokens":100,"output_tokens":20,"cache_read_tokens":300,"cache_write_tokens":10,"api_call_count":2}"""
+                    """{"object":"hermes.session","session":{"id":"root","end_reason":"compression","input_tokens":100,"output_tokens":20,"cache_read_tokens":300,"cache_write_tokens":10,"api_call_count":2}}"""
                 )
         )
         server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "api-key"), scope)
         try {
             val details = client.conversationTokenDetails("tip")
 
             assertEquals(645L, details.usage.totalTokens)
-            assertEquals("System instructions\nSecond line", details.systemPrompt)
+            assertEquals(null, details.systemPrompt)
             assertEquals("/api/sessions/tip", server.takeRequest().path)
             assertEquals("/api/sessions/root", server.takeRequest().path)
         } finally {
@@ -383,101 +429,52 @@ class HermesClientTest {
     }
 
     @Test
-    fun toolDefinitionsUseActiveRuntimeSessionAndParseSections() = runBlocking {
-        val server = MockWebServer()
-        val rpcRequests = Channel<JsonObject>(Channel.UNLIMITED)
-        server.enqueue(
+    fun toolDefinitionsUseApiServerToolsets() = runBlocking {
+        withClient(
             MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onMessage(webSocket: WebSocket, text: String) {
-                            val request = Json.parseToJsonElement(text).jsonObject
-                            rpcRequests.trySend(request)
-                            val id = request["id"]!!.jsonPrimitive.content
-                            webSocket.send(
-                                """{"jsonrpc":"2.0","id":"$id","result":{"sections":[{"name":"files","tools":[{"name":"read_file","description":"Read a file."},{"name":"patch","description":"Edit a file."}]}],"total":2}}"""
-                            )
-                        }
-
-                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                            webSocket.close(code, reason)
-                        }
-                    }
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","platform":"api_server","data":[{"name":"file","label":"Files","description":"File operations","enabled":true,"configured":true,"tools":["read_file","patch"]},{"name":"browser","label":"Browser","enabled":false,"configured":true,"tools":["browser"]}]}"""
                 )
-        )
-        server.start()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
-        try {
-            val definitions = client.toolDefinitions("runtime-1")
-            val rpc = withTimeout(5_000) { rpcRequests.receive() }
+        ) { client, server ->
+            val definitions = client.toolDefinitions("api-1")
 
-            assertEquals("tools.show", rpc["method"]!!.jsonPrimitive.content)
-            assertEquals(
-                "runtime-1",
-                rpc["params"]!!.jsonObject["session_id"]!!.jsonPrimitive.content,
-            )
             assertEquals(2, definitions.total)
-            assertEquals("files", definitions.sections.single().name)
-            assertEquals("read_file", definitions.sections.single().tools.first().name)
-            assertEquals("Read a file.", definitions.sections.single().tools.first().description)
-        } finally {
-            client.close()
-            scope.cancel()
-            server.shutdown()
+            assertEquals("Files", definitions.sections.single().name)
+            assertEquals(
+                listOf("read_file", "patch"),
+                definitions.sections.single().tools.map { it.name },
+            )
+            assertEquals("/v1/toolsets", server.takeRequest().path)
         }
     }
 
     @Test
-    fun tokenUsageUsesContextRpcAndPersistedSessionDetail() = runBlocking {
-        val server = MockWebServer()
-        val rpcRequests = Channel<JsonObject>(Channel.UNLIMITED)
-        server.enqueue(
-            MockResponse()
-                .withWebSocketUpgrade(
-                    object : WebSocketListener() {
-                        override fun onMessage(webSocket: WebSocket, text: String) {
-                            val request = Json.parseToJsonElement(text).jsonObject
-                            rpcRequests.trySend(request)
-                            val id = request["id"]!!.jsonPrimitive.content
-                            webSocket.send(
-                                """{"jsonrpc":"2.0","id":"$id","result":{"categories":[],"context_used":500,"context_max":1000,"estimated_total":500}}"""
-                            )
-                        }
+    fun transcriptionExplainsThatApiServerDoesNotExposeAudio() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client = HermesClient(ConnectionConfig("https://example.com", token = "api-key"), scope)
+        try {
+            val error =
+                runCatching { client.transcribe(byteArrayOf(1), "audio/mp4") }.exceptionOrNull()
+            assertTrue(error?.message.orEmpty().contains("not support audio transcription"))
+        } finally {
+            client.close()
+            scope.cancel()
+        }
+    }
 
-                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                            webSocket.close(code, reason)
-                        }
-                    }
-                )
-        )
-        server.enqueue(
-            MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "application/json")
-                .setBody(
-                    """{"id":"stored-1","input_tokens":120,"output_tokens":30,"cache_read_tokens":400,"cache_write_tokens":10,"api_call_count":2}"""
-                )
-        )
+    private suspend fun withClient(
+        vararg responses: MockResponse,
+        block: suspend (HermesClient, MockWebServer) -> Unit,
+    ) {
+        val server = MockWebServer()
+        responses.forEach(server::enqueue)
         server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client =
-            HermesClient(ConnectionConfig(server.url("/").toString(), token = "test"), scope)
+            HermesClient(ConnectionConfig(server.url("/").toString(), token = "api-key"), scope)
         try {
-            val context = client.contextBreakdown("runtime-1")
-            val rpc = withTimeout(5_000) { rpcRequests.receive() }
-            val cumulative = client.sessionTokenUsage("stored-1")
-
-            assertEquals("session.context_breakdown", rpc["method"]!!.jsonPrimitive.content)
-            assertEquals(
-                "runtime-1",
-                rpc["params"]!!.jsonObject["session_id"]!!.jsonPrimitive.content,
-            )
-            assertEquals(500L, context.contextUsed)
-            assertEquals(560L, cumulative.totalTokens)
-            assertEquals("/api/ws?token=test", server.takeRequest().path)
-            assertEquals("/api/sessions/stored-1", server.takeRequest().path)
+            block(client, server)
         } finally {
             client.close()
             scope.cancel()

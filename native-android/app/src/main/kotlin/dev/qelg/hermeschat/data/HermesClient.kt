@@ -1,285 +1,72 @@
 package dev.qelg.hermeschat.data
 
 import java.io.Closeable
-import java.io.InterruptedIOException
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 
 class HermesClient(
     private val config: ConnectionConfig,
-    private val scope: CoroutineScope,
-    private val client: OkHttpClient = OkHttpClient.Builder().cookieJar(MemoryCookieJar()).build(),
-    transcriptionTimeoutMillis: Long = TimeUnit.MINUTES.toMillis(2),
+    @Suppress("UNUSED_PARAMETER") scope: CoroutineScope,
+    private val client: OkHttpClient = OkHttpClient(),
 ) : Closeable {
-    private val transcriptionClient =
-        client
-            .newBuilder()
-            .readTimeout(transcriptionTimeoutMillis, TimeUnit.MILLISECONDS)
-            .callTimeout(transcriptionTimeoutMillis, TimeUnit.MILLISECONDS)
-            .build()
     private val json = Json { ignoreUnknownKeys = true }
-    private val ids = AtomicLong()
-    private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
-    private val reconnect = ReconnectPolicy()
-    private val reconnectWait = ReconnectWait()
     private val eventChannel = Channel<GatewayEvent>(Channel.UNLIMITED)
     val events: Flow<GatewayEvent> = eventChannel.receiveAsFlow()
-    private val stateLock = Any()
-    private var socket: WebSocket? = null
-    private var opening: CompletableDeferred<Unit>? = null
-    private var generation = 0L
-    private var reconnectJob: Job? = null
+
     @Volatile private var closed = false
+    @Volatile private var connected = false
+    @Volatile private var activeCall: Call? = null
+    @Volatile private var activeRunId: String? = null
+    @Volatile private var activeSessionId: String? = null
+    @Volatile private var stopRequested = false
+    private var toolSequence = 0L
+    private val runningToolIds = mutableMapOf<String, java.util.ArrayDeque<String>>()
 
     suspend fun connect() {
         check(!closed) { "Hermes client is closed" }
-        val (ready, ownsOpening) =
-            synchronized(stateLock) {
-                if (socket != null) return
-                opening?.let { it to false }
-                    ?: (CompletableDeferred<Unit>().also { opening = it } to true)
-            }
-        if (!ownsOpening) {
-            ready.await()
-            return
+        if (connected) return
+        val capabilities = http("GET", "/v1/capabilities")
+        check(capabilities.string("platform") == "hermes-agent") {
+            "Endpoint is not a Hermes API Server"
         }
-        val socketGeneration = synchronized(stateLock) { ++generation }
-        try {
-            val auth =
-                if (config.token.isNotBlank()) {
-                    "token=${config.token.urlEncode()}"
-                } else {
-                    login()
-                    val ticket =
-                        http("POST", "/api/auth/ws-ticket").string("ticket")
-                            ?: error("Hermes returned no WebSocket ticket")
-                    "ticket=${ticket.urlEncode()}"
-                }
-            check(!closed) { "Hermes client is closed" }
-            val httpUrl = config.normalizedBaseUrl.toHttpUrl()
-            val wsUrl =
-                httpUrl
-                    .newBuilder()
-                    // OkHttp's WebSocket API requires an http(s) URL and performs the
-                    // ws(s) upgrade internally; HttpUrl deliberately rejects ws/wss.
-                    .encodedPath("/api/ws")
-                    .encodedQuery(auth)
-                    .build()
-            client.newWebSocket(
-                Request.Builder().url(wsUrl).build(),
-                listener(ready, socketGeneration),
-            )
-            ready.await()
-            reconnect.reset()
-        } finally {
-            synchronized(stateLock) { if (opening === ready) opening = null }
-        }
-    }
-
-    private fun listener(ready: CompletableDeferred<Unit>, socketGeneration: Long) =
-        object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                val accepted =
-                    synchronized(stateLock) {
-                        if (!closed && generation == socketGeneration) {
-                            socket = webSocket
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                if (accepted) ready.complete(Unit) else webSocket.close(1000, "Superseded")
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (isCurrent(webSocket, socketGeneration)) handleFrame(text)
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (isCurrent(webSocket, socketGeneration)) handleFrame(bytes.utf8())
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-                disconnected(
-                    webSocket,
-                    socketGeneration,
-                    ready,
-                    "Hermes WebSocket closing: $reason",
-                )
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                disconnected(webSocket, socketGeneration, ready, "Hermes WebSocket closed: $reason")
-            }
-
-            override fun onFailure(webSocket: WebSocket, error: Throwable, response: Response?) {
-                ready.completeExceptionally(error)
-                disconnected(
-                    webSocket,
-                    socketGeneration,
-                    ready,
-                    "Hermes WebSocket failed: ${error.message}",
-                )
-            }
-        }
-
-    private fun isCurrent(webSocket: WebSocket, socketGeneration: Long): Boolean =
-        synchronized(stateLock) {
-            !closed && generation == socketGeneration && socket === webSocket
-        }
-
-    private fun handleFrame(frame: String) {
-        val root = runCatching { json.parseToJsonElement(frame).jsonObject }.getOrNull() ?: return
-        root["id"]?.jsonPrimitive?.contentOrNull?.let { id ->
-            pending.remove(id)?.let { deferred ->
-                root["error"]?.jsonObject?.string("message")?.let {
-                    deferred.completeExceptionally(IllegalStateException(it))
-                }
-                    ?: deferred.complete(
-                        root["result"] as? JsonObject
-                            ?: buildJsonObject { put("data", root["result"] ?: JsonNull) }
-                    )
-            }
-            return
-        }
-        ProtocolCodec.event(frame)?.let { eventChannel.trySend(it) }
-    }
-
-    private fun disconnected(
-        webSocket: WebSocket,
-        socketGeneration: Long,
-        ready: CompletableDeferred<Unit>,
-        message: String,
-    ) {
-        val shouldReconnect =
-            synchronized(stateLock) {
-                if (
-                    closed ||
-                        generation != socketGeneration ||
-                        (socket != null && socket !== webSocket)
-                )
-                    return
-                socket = null
-                if (opening === ready) opening = null
-                generation++
-                reconnectJob?.isActive != true
-            }
-        pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }
-        pending.clear()
-        if (shouldReconnect) startReconnect(message)
-    }
-
-    private fun startReconnect(message: String) {
-        reconnectJob =
-            scope.launch {
-                eventChannel.send(
-                    GatewayEvent(
-                        "connection.lost",
-                        null,
-                        mapOf("message" to JsonPrimitive(message)),
-                    )
-                )
-                while (isActive && !closed) {
-                    reconnectWait.await(reconnect.nextDelayMillis()) { seconds ->
-                        eventChannel.send(
-                            GatewayEvent(
-                                "connection.retry_scheduled",
-                                null,
-                                mapOf("seconds" to JsonPrimitive(seconds)),
-                            )
-                        )
-                    }
-                    if (!isActive || closed) break
-                    eventChannel.send(GatewayEvent("connection.retry_started", null, emptyMap()))
-                    val result = runCatching { connect() }
-                    if (result.isSuccess) {
-                        eventChannel.send(GatewayEvent("connection.restored", null, emptyMap()))
-                        break
-                    }
-                }
-            }
-    }
-
-    fun reconnectNow() {
-        reconnectWait.connectNow()
-    }
-
-    suspend fun request(method: String, params: Map<String, JsonElement> = emptyMap()): JsonObject {
-        connect()
-        val id = "mobile-${ids.incrementAndGet()}"
-        val result = CompletableDeferred<JsonObject>()
-        pending[id] = result
-        val sent =
-            synchronized(stateLock) {
-                socket?.send(ProtocolCodec.request(id, method, params).toString()) == true
-            }
-        if (!sent) {
-            pending.remove(id)
-            throw IllegalStateException("Hermes WebSocket is disconnected")
-        }
-        return try {
-            withTimeout(30 * 60 * 1_000L) { result.await() }
-        } finally {
-            pending.remove(id)
-        }
+        connected = true
     }
 
     suspend fun modelOptions(sessionId: String? = null): ModelCatalog {
-        val params = mutableMapOf<String, JsonElement>("explicit_only" to JsonPrimitive(true))
-        sessionId?.takeIf(String::isNotBlank)?.let { params["session_id"] = JsonPrimitive(it) }
-        return ModelCatalog.fromJson(request("model.options", params))
-    }
-
-    suspend fun selectModel(sessionId: String, selection: ModelSelection): JsonObject =
-        request(
-            "config.set",
-            mapOf(
-                "session_id" to JsonPrimitive(sessionId),
-                "key" to JsonPrimitive("model"),
-                "value" to JsonPrimitive(modelSwitchValue(selection)),
-                "confirm_expensive_model" to JsonPrimitive(true),
-            ),
+        val response = http("GET", "/v1/models")
+        val selected =
+            (response["data"] as? JsonArray)
+                ?.mapNotNull { it as? JsonObject }
+                ?.firstNotNullOfOrNull { it.string("id")?.takeIf(String::isNotBlank) }
+        return ModelCatalog(
+            selected = selected?.let { ModelSelection("api_server", it) },
+            providers = emptyList(),
         )
+    }
 
     suspend fun history(sessionId: String): List<JsonObject> {
         val response = http("GET", "/api/sessions/${sessionId.urlEncode()}/messages")
-        return ((response["messages"] as? JsonArray) ?: (response["data"] as? JsonArray))
+        return ((response["data"] as? JsonArray) ?: (response["messages"] as? JsonArray))
             ?.mapNotNull { it as? JsonObject }
             .orEmpty()
     }
@@ -291,18 +78,334 @@ class HermesClient(
             .orEmpty()
     }
 
-    suspend fun contextBreakdown(runtimeSessionId: String): ContextBreakdown =
-        ContextBreakdown.fromJson(
-            request(
-                "session.context_breakdown",
-                mapOf("session_id" to JsonPrimitive(runtimeSessionId)),
+    suspend fun createSession(model: String? = null): JsonObject {
+        val response =
+            http(
+                "POST",
+                "/api/sessions",
+                buildJsonObject { model?.takeIf(String::isNotBlank)?.let { put("model", it) } },
             )
+        return response["session"] as? JsonObject ?: error("Hermes returned no session")
+    }
+
+    suspend fun submit(sessionId: String, text: String) {
+        check(activeRunId == null && activeCall == null) { "A Hermes turn is already active" }
+        activeSessionId = sessionId
+        val started =
+            try {
+                val conversationHistory = buildJsonArray {
+                    history(sessionId).forEach { row ->
+                        val role = row.string("role")
+                        val content = row.string("content")
+                        if (role != null && content != null) {
+                            add(
+                                buildJsonObject {
+                                    put("role", role)
+                                    put("content", content)
+                                }
+                            )
+                        }
+                    }
+                }
+                http(
+                    "POST",
+                    "/v1/runs",
+                    buildJsonObject {
+                        put("input", text)
+                        put("session_id", sessionId)
+                        put("conversation_history", conversationHistory)
+                    },
+                )
+            } catch (error: Throwable) {
+                activeSessionId = null
+                stopRequested = false
+                throw error
+            }
+        val runId =
+            started.string("run_id")
+                ?: run {
+                    activeSessionId = null
+                    stopRequested = false
+                    error("Hermes returned no run ID")
+                }
+        activeRunId = runId
+        try {
+            if (stopRequested) stopRun(runId)
+            streamRunEvents(runId)
+            val latest = latestSessionId(sessionId)
+            if (latest != sessionId) {
+                eventChannel.send(
+                    GatewayEvent(
+                        "session.rotated",
+                        sessionId,
+                        mapOf("new_session_id" to JsonPrimitive(latest)),
+                    )
+                )
+            }
+        } finally {
+            clearActiveRun(runId)
+        }
+    }
+
+    private suspend fun streamRunEvents(runId: String) =
+        withContext(Dispatchers.IO) {
+            require(config.token.isNotBlank()) { "API key is required" }
+            val request =
+                Request.Builder()
+                    .url(config.normalizedBaseUrl + "/v1/runs/${runId.urlEncode()}/events")
+                    .header("Accept", "text/event-stream")
+                    .header("Authorization", "Bearer ${config.token}")
+                    .get()
+                    .build()
+            val call = client.newCall(request)
+            activeCall = call
+            var streamError: String? = null
+            var terminalEventReceived = false
+            try {
+                call.execute().use { response ->
+                    val responseBody = response.body
+                    check(response.isSuccessful) {
+                        "Hermes HTTP ${response.code}: ${responseBody?.string().orEmpty()}"
+                    }
+                    val source = responseBody?.source() ?: error("Hermes returned no event stream")
+                    var eventName: String? = null
+                    val dataLines = mutableListOf<String>()
+
+                    suspend fun dispatch() {
+                        if (dataLines.isNotEmpty()) {
+                            val payload =
+                                runCatching {
+                                        json
+                                            .parseToJsonElement(dataLines.joinToString("\n"))
+                                            .jsonObject
+                                    }
+                                    .getOrElse { error ->
+                                        throw IllegalStateException(
+                                            "Hermes returned an invalid SSE event",
+                                            error,
+                                        )
+                                    }
+                            val name =
+                                eventName
+                                    ?: payload.string("event")
+                                    ?: error("Hermes SSE event has no type")
+                            if (name in setOf("run.completed", "run.cancelled", "run.failed")) {
+                                terminalEventReceived = true
+                            }
+                            streamError = streamError ?: translateEvent(name, payload)
+                        }
+                        eventName = null
+                        dataLines.clear()
+                    }
+
+                    while (!source.exhausted()) {
+                        val line = source.readUtf8Line() ?: break
+                        when {
+                            line.isEmpty() -> dispatch()
+                            line.startsWith("event:") -> eventName = line.substringAfter(':').trim()
+                            line.startsWith("data:") ->
+                                dataLines += line.substringAfter(':').trimStart()
+                        }
+                    }
+                    dispatch()
+                }
+            } catch (error: java.io.IOException) {
+                if (!call.isCanceled()) throw error
+            } finally {
+                if (activeCall === call) activeCall = null
+            }
+            streamError?.let { error(it) }
+            if (!terminalEventReceived) {
+                error("Hermes run event stream ended before a terminal event")
+            }
+        }
+
+    private suspend fun translateEvent(name: String, payload: JsonObject): String? {
+        val sessionId = activeSessionId
+        fun event(type: String, values: Map<String, JsonElement>) =
+            GatewayEvent(type, sessionId, values)
+
+        val translated =
+            when (name) {
+                "message.delta" ->
+                    event(
+                        "message.delta",
+                        mapOf(
+                            "text" to (payload["delta"] ?: JsonPrimitive("")),
+                            "message_id" to (payload["run_id"] ?: JsonPrimitive("api-message")),
+                        ),
+                    )
+                "tool.started",
+                "tool.completed",
+                "tool.failed" -> {
+                    val toolName = payload.string("tool_name") ?: payload.string("tool") ?: "tool"
+                    val correlationKey = "${payload.string("run_id").orEmpty()}:$toolName"
+                    val toolId =
+                        if (name == "tool.started") {
+                            "api-tool:${++toolSequence}"
+                                .also {
+                                    runningToolIds
+                                        .getOrPut(correlationKey) { java.util.ArrayDeque() }
+                                        .addLast(it)
+                                }
+                        } else {
+                            runningToolIds[correlationKey]?.pollFirst()
+                                ?: "api-tool:${++toolSequence}"
+                        }
+                    if (runningToolIds[correlationKey]?.isEmpty() == true) {
+                        runningToolIds.remove(correlationKey)
+                    }
+                    val failed = name == "tool.failed" || payload.string("error") == "true"
+                    event(
+                        when {
+                            name == "tool.started" -> "tool.start"
+                            failed -> "tool.failed"
+                            else -> "tool.complete"
+                        },
+                        buildMap {
+                            put("name", JsonPrimitive(toolName))
+                            put("tool_call_id", JsonPrimitive(toolId))
+                            payload["args"]?.let { put("arguments", it) }
+                            payload["preview"]?.let { put("result", it) }
+                            payload["duration"]
+                                ?.jsonPrimitive
+                                ?.contentOrNull
+                                ?.toDoubleOrNull()
+                                ?.let { put("duration_ms", JsonPrimitive((it * 1_000).toLong())) }
+                        },
+                    )
+                }
+                "approval.request" ->
+                    event(
+                        "approval.request",
+                        buildMap {
+                            payload["command"]?.let { put("command", it) }
+                            payload["description"]?.let { put("description", it) }
+                            put(
+                                "allow_permanent",
+                                JsonPrimitive(
+                                    (payload["choices"] as? JsonArray)?.any {
+                                        it.jsonPrimitive.contentOrNull == "always"
+                                    } == true
+                                ),
+                            )
+                        },
+                    )
+                "run.completed" -> {
+                    runningToolIds.clear()
+                    eventChannel.send(
+                        event(
+                            "message.complete",
+                            mapOf(
+                                "text" to (payload["output"] ?: JsonPrimitive("")),
+                                "message_id" to (payload["run_id"] ?: JsonPrimitive("api-message")),
+                            ),
+                        )
+                    )
+                    event("session.inactive", emptyMap())
+                }
+                "run.cancelled" -> {
+                    runningToolIds.clear()
+                    event("session.inactive", emptyMap())
+                }
+                "run.failed",
+                "error" -> {
+                    runningToolIds.clear()
+                    return payload.string("error")
+                        ?: payload.string("message")
+                        ?: "Hermes API run failed"
+                }
+                else -> null
+            }
+        translated?.let { eventChannel.send(it) }
+        return null
+    }
+
+    suspend fun interrupt() {
+        stopRequested = true
+        val runId = activeRunId ?: return
+        stopRun(runId)
+    }
+
+    suspend fun approve(choice: String) {
+        val runId = activeRunId ?: error("No active Hermes run")
+        http(
+            "POST",
+            "/v1/runs/${runId.urlEncode()}/approval",
+            buildJsonObject { put("choice", choice) },
+        )
+    }
+
+    private suspend fun stopRun(runId: String) {
+        http("POST", "/v1/runs/${runId.urlEncode()}/stop", JsonObject(emptyMap()))
+    }
+
+    private fun clearActiveRun(runId: String) {
+        if (activeRunId == runId) activeRunId = null
+        activeSessionId = null
+        stopRequested = false
+        runningToolIds.clear()
+    }
+
+    fun reconnectNow() {
+        // HTTP requests reconnect independently; there is no persistent socket.
+    }
+
+    suspend fun contextBreakdown(runtimeSessionId: String): ContextBreakdown =
+        throw UnsupportedOperationException(
+            "The Hermes API Server does not expose a context breakdown endpoint"
         )
 
-    suspend fun toolDefinitions(runtimeSessionId: String): ToolDefinitions =
-        ToolDefinitions.fromJson(
-            request("tools.show", mapOf("session_id" to JsonPrimitive(runtimeSessionId)))
-        )
+    suspend fun toolDefinitions(runtimeSessionId: String): ToolDefinitions {
+        val response = http("GET", "/v1/toolsets")
+        val sections =
+            (response["data"] as? JsonArray)
+                ?.mapNotNull { it as? JsonObject }
+                ?.filter { it["enabled"]?.jsonPrimitive?.contentOrNull == "true" }
+                ?.mapNotNull { toolset ->
+                    val tools =
+                        (toolset["tools"] as? JsonArray)
+                            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                            ?.map { ToolSummary(it, "") }
+                            .orEmpty()
+                    if (tools.isEmpty()) null
+                    else
+                        ToolSection(
+                            toolset.string("label") ?: toolset.string("name").orEmpty(),
+                            tools,
+                        )
+                }
+                .orEmpty()
+        return ToolDefinitions(sections, sections.sumOf { it.tools.size })
+    }
+
+    suspend fun latestSessionId(sessionId: String): String {
+        val response = http("GET", "/api/sessions?limit=500&include_children=true")
+        val rows =
+            ((response["data"] as? JsonArray) ?: (response["sessions"] as? JsonArray))
+                ?.mapNotNull { it as? JsonObject }
+                .orEmpty()
+        val descendants = mutableSetOf(sessionId)
+        var changed: Boolean
+        do {
+            changed = false
+            rows.forEach { row ->
+                val id = row.string("id")
+                val parent = row.string("parent_session_id")
+                if (id != null && parent in descendants && descendants.add(id)) changed = true
+            }
+        } while (changed)
+        val leaves =
+            rows.filter { row ->
+                val id = row.string("id")
+                id in descendants && rows.none { it.string("parent_session_id") == id }
+            }
+        return leaves
+            .maxByOrNull {
+                it["last_active"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
+            }
+            ?.string("id") ?: sessionId
+    }
 
     suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =
         CumulativeTokenUsage.fromJson(sessionDetail(storedSessionId))
@@ -312,7 +415,6 @@ class HermesClient(
 
     suspend fun conversationTokenDetails(storedSessionId: String): ConversationTokenDetails {
         var detail = sessionDetail(storedSessionId)
-        val systemPrompt = detail.string("system_prompt")?.takeIf(String::isNotBlank)
         var total = CumulativeTokenUsage.fromJson(detail)
         val visited = mutableSetOf(storedSessionId)
         while (visited.size < 100) {
@@ -323,74 +425,42 @@ class HermesClient(
             total += CumulativeTokenUsage.fromJson(parent)
             detail = parent
         }
-        return ConversationTokenDetails(total, systemPrompt)
+        // The API intentionally exposes only has_system_prompt, never the prompt text.
+        return ConversationTokenDetails(total, null)
     }
 
-    private suspend fun sessionDetail(storedSessionId: String): JsonObject =
-        http("GET", "/api/sessions/${storedSessionId.urlEncode()}")
-
-    suspend fun transcribe(bytes: ByteArray, mimeType: String): String {
-        val data = java.util.Base64.getEncoder().encodeToString(bytes)
-        val response =
-            try {
-                http(
-                    "POST",
-                    "/api/audio/transcribe",
-                    buildJsonObject {
-                        put("data_url", "data:$mimeType;base64,$data")
-                        put("mime_type", mimeType)
-                    },
-                    transcriptionClient,
-                )
-            } catch (error: InterruptedIOException) {
-                throw IllegalStateException(
-                    "Voice transcription timed out. Please check the server and try again.",
-                    error,
-                )
-            }
-        return response.string("transcript")?.trim()?.takeIf(String::isNotEmpty)
-            ?: error("Transcription returned no text")
+    private suspend fun sessionDetail(storedSessionId: String): JsonObject {
+        val response = http("GET", "/api/sessions/${storedSessionId.urlEncode()}")
+        return response["session"] as? JsonObject ?: error("Hermes returned no session details")
     }
 
-    private suspend fun login() {
-        require(config.username.isNotBlank() && config.password.isNotBlank()) {
-            "Username and password are required"
-        }
-        http(
-            "POST",
-            "/auth/password-login",
-            buildJsonObject {
-                put("provider", "basic")
-                put("username", config.username)
-                put("password", config.password)
-                put("next", "")
-            },
+    suspend fun transcribe(bytes: ByteArray, mimeType: String): String =
+        throw UnsupportedOperationException(
+            "The Hermes API Server does not support audio transcription"
         )
-    }
 
-    private suspend fun http(
-        method: String,
-        path: String,
-        body: JsonObject? = null,
-        httpClient: OkHttpClient = client,
-    ): JsonObject =
+    private suspend fun http(method: String, path: String, body: JsonObject? = null): JsonObject =
         withContext(Dispatchers.IO) {
+            require(config.token.isNotBlank()) { "API key is required" }
             val request =
                 Request.Builder()
                     .url(config.normalizedBaseUrl + path)
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer ${config.token}")
                     .apply {
-                        header("Accept", "application/json")
-                        if (config.token.isNotBlank())
-                            header("X-Hermes-Session-Token", config.token)
-                        if (method == "POST")
-                            post(
-                                (body ?: JsonObject(emptyMap()))
-                                    .toString()
-                                    .toRequestBody("application/json".toMediaType())
-                            )
+                        when (method) {
+                            "GET" -> get()
+                            "POST" ->
+                                post(
+                                    (body ?: JsonObject(emptyMap()))
+                                        .toString()
+                                        .toRequestBody(JSON_MEDIA_TYPE)
+                                )
+                            else -> error("Unsupported HTTP method: $method")
+                        }
                     }
                     .build()
-            httpClient.newCall(request).execute().use { response ->
+            client.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
                 check(response.isSuccessful) { "Hermes HTTP ${response.code}: $text" }
                 if (text.isBlank()) JsonObject(emptyMap())
@@ -399,36 +469,17 @@ class HermesClient(
         }
 
     override fun close() {
-        val activeSocket =
-            synchronized(stateLock) {
-                if (closed) return
-                closed = true
-                generation++
-                opening?.completeExceptionally(IllegalStateException("Hermes client is closed"))
-                opening = null
-                reconnectJob?.cancel()
-                reconnectJob = null
-                socket.also { socket = null }
-            }
-        activeSocket?.close(1000, "App closed")
-        pending.values.forEach {
-            it.completeExceptionally(IllegalStateException("Hermes client is closed"))
-        }
-        pending.clear()
+        if (closed) return
+        closed = true
+        activeCall?.cancel()
+        activeCall = null
         eventChannel.close()
         client.connectionPool.evictAll()
     }
-}
 
-private class MemoryCookieJar : CookieJar {
-    private val cookies = mutableMapOf<String, Cookie>()
-
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        synchronized(this.cookies) { cookies.forEach { this.cookies[it.name] = it } }
+    private companion object {
+        val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }
-
-    override fun loadForRequest(url: HttpUrl): List<Cookie> =
-        synchronized(cookies) { cookies.values.filter { it.matches(url) } }
 }
 
 private fun String.urlEncode(): String = java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
