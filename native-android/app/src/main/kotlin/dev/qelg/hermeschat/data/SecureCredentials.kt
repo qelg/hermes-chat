@@ -22,10 +22,16 @@ class SecureCredentials(context: Context) {
                 val prefs = preferences()
                 val url = prefs.getString("url", null) ?: return null
                 ConnectionConfig(
-                    url,
-                    prefs.getString("username", "").orEmpty(),
-                    prefs.getString("password", "").orEmpty(),
-                    prefs.getString("token", "").orEmpty(),
+                    baseUrl = url,
+                    username = prefs.getString("username", "").orEmpty(),
+                    password = prefs.getString("password", "").orEmpty(),
+                    token = prefs.getString("token", "").orEmpty(),
+                    dashboardBaseUrl = prefs.getString("dashboard_url", "").orEmpty(),
+                    dashboardToken = prefs.getString("dashboard_token", "").orEmpty(),
+                    transcriptionBackend =
+                        prefs.getString("transcription_backend", null)?.let { value ->
+                            runCatching { TranscriptionBackend.valueOf(value) }.getOrNull()
+                        } ?: TranscriptionBackend.DISABLED,
                 )
             }
             .getOrElse {
@@ -41,6 +47,9 @@ class SecureCredentials(context: Context) {
                     .putString("username", config.username)
                     .putString("password", config.password)
                     .putString("token", config.token)
+                    .putString("dashboard_url", config.normalizedDashboardBaseUrl)
+                    .putString("dashboard_token", config.dashboardToken)
+                    .putString("transcription_backend", config.transcriptionBackend.name)
                     .apply()
             }
             .getOrElse {

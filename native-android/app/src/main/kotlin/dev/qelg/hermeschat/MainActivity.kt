@@ -80,9 +80,17 @@ internal fun Modifier.fullScreenDetailBackground(active: Boolean): Modifier =
 @Composable
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
     var url by rememberSaveable { mutableStateOf("") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
     var token by rememberSaveable { mutableStateOf("") }
+    var dashboardTranscription by rememberSaveable { mutableStateOf(false) }
+    var dashboardUrl by rememberSaveable { mutableStateOf("") }
+    var dashboardToken by rememberSaveable { mutableStateOf("") }
+    var dashboardUsername by rememberSaveable { mutableStateOf("") }
+    var dashboardPassword by rememberSaveable { mutableStateOf("") }
+    val dashboardReady =
+        !dashboardTranscription ||
+            (dashboardUrl.isNotBlank() &&
+                (dashboardToken.isNotBlank() ||
+                    (dashboardUsername.isNotBlank() && dashboardPassword.isNotBlank())))
     Surface(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth()
@@ -93,50 +101,91 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
         ) {
             Spacer(Modifier.height(40.dp))
             Text("Connect to Hermes", style = MaterialTheme.typography.headlineMedium)
-            Text("Uses the authenticated Hermes Desktop server at /api/ws.")
+            Text("Sessions, history, chat and run events use the authenticated API Server.")
             OutlinedTextField(
                 url,
                 { url = it },
                 Modifier.fillMaxWidth(),
-                label = { Text("Server URL") },
-                placeholder = { Text("https://hermes.example") },
+                label = { Text("API Server URL") },
+                placeholder = { Text("https://home.example.ts.net:8643") },
                 singleLine = true,
             )
             OutlinedTextField(
                 token,
                 { token = it },
                 Modifier.fillMaxWidth(),
-                label = { Text("Session token (optional)") },
-                singleLine = true,
-            )
-            HorizontalDivider()
-            Text("Or sign in with password", style = MaterialTheme.typography.labelLarge)
-            OutlinedTextField(
-                username,
-                { username = it },
-                Modifier.fillMaxWidth(),
-                label = { Text("Username") },
-                singleLine = true,
-            )
-            OutlinedTextField(
-                password,
-                { password = it },
-                Modifier.fillMaxWidth(),
-                label = { Text("Password") },
+                label = { Text("API key") },
                 singleLine = true,
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
             )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Dashboard transcription")
+                    Text(
+                        "Route only voice transcription through the Web backend.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(dashboardTranscription, { dashboardTranscription = it })
+            }
+            if (dashboardTranscription) {
+                OutlinedTextField(
+                    dashboardUrl,
+                    { dashboardUrl = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Dashboard URL") },
+                    placeholder = { Text("https://home.example.ts.net:9119") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    dashboardToken,
+                    { dashboardToken = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Dashboard session token (optional)") },
+                    singleLine = true,
+                    visualTransformation =
+                        androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+                OutlinedTextField(
+                    dashboardUsername,
+                    { dashboardUsername = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Dashboard username (alternative)") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    dashboardPassword,
+                    { dashboardPassword = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Dashboard password") },
+                    singleLine = true,
+                    visualTransformation =
+                        androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+            }
             Button(
-                { connect(ConnectionConfig(url, username, password, token)) },
-                enabled =
-                    url.isNotBlank() &&
-                        (token.isNotBlank() || (username.isNotBlank() && password.isNotBlank())),
+                {
+                    connect(
+                        ConnectionConfig(
+                            baseUrl = url,
+                            token = token,
+                            dashboardBaseUrl = dashboardUrl,
+                            dashboardToken = dashboardToken,
+                            username = dashboardUsername,
+                            password = dashboardPassword,
+                            transcriptionBackend =
+                                if (dashboardTranscription) TranscriptionBackend.DASHBOARD
+                                else TranscriptionBackend.DISABLED,
+                        )
+                    )
+                },
+                enabled = url.isNotBlank() && token.isNotBlank() && dashboardReady,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Connect")
             }
             Text(
-                "Credentials are encrypted with Android Keystore.",
+                "API keys, Dashboard tokens and passwords are encrypted with Android Keystore.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -226,6 +275,20 @@ private fun SessionPane(
                                     color = MaterialTheme.colorScheme.primary,
                                 )
                             else session.preview?.let { Text(it, maxLines = 2) }
+                            val kind =
+                                when {
+                                    session.source == "delegate_task" -> "Delegate task"
+                                    session.endReason == "compression" -> "Compression session"
+                                    session.parentSessionId != null -> "Child session"
+                                    else -> session.source
+                                }
+                            kind?.takeIf(String::isNotBlank)?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                )
+                            }
                             updated?.let {
                                 Text(
                                     "Latest $it",
@@ -286,7 +349,6 @@ private fun ChatPane(
     onBack: (() -> Unit)? = null,
 ) {
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
-    var showModels by rememberSaveable { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
@@ -354,15 +416,6 @@ private fun ChatPane(
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 actions = {
-                    IconButton(
-                        {
-                            showModels = true
-                            vm.refreshModels()
-                        },
-                        enabled = !state.active,
-                    ) {
-                        Icon(Icons.Default.SmartToy, "Choose model")
-                    }
                     if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
                 },
             )
@@ -509,7 +562,14 @@ private fun ChatPane(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                VoiceButton(vm, enabled = !state.transcribing) { text -> vm.send(text) }
+                if (state.transcriptionEnabled) {
+                    VoiceButton(
+                        vm,
+                        enabled = !state.transcribing && !state.connecting && !state.active,
+                    ) { text ->
+                        vm.send(text)
+                    }
+                }
                 OutlinedTextField(
                     input,
                     vm::setDraft,
@@ -523,7 +583,7 @@ private fun ChatPane(
                 )
                 IconButton(
                     { if (state.clarify != null) vm.answerClarify(input) else vm.send(input) },
-                    enabled = input.isNotBlank() && !state.connecting,
+                    enabled = input.isNotBlank() && !state.connecting && !state.active,
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, "Send")
                 }
@@ -539,18 +599,6 @@ private fun ChatPane(
                 )
             null -> Unit
         }
-    }
-    if (showModels) {
-        ModelPickerDialog(
-            catalog = state.modelCatalog,
-            loading = state.modelLoading,
-            onRefresh = vm::refreshModels,
-            onSelect = {
-                vm.selectModel(it)
-                showModels = false
-            },
-            onDismiss = { showModels = false },
-        )
     }
     if (showUsageDetails) {
         TokenUsageBottomSheet(

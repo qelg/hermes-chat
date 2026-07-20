@@ -8,30 +8,32 @@ A native Kotlin/Jetpack Compose Android client for Hermes Agent.
 
 This stable link is updated automatically after every successful CI build on `main`.
 
-The app connects to the same authenticated `hermes serve` backend as Hermes Desktop. Chat, session history, tool activity, approvals, interruption, and voice transcription use Hermes' native WebSocket/JSON-RPC and HTTP surfaces rather than the OpenAI-compatible API Server.
+The app uses Hermes Agent's authenticated API Server for the coherent session/chat runtime. Optional voice transcription can be routed separately through the Dashboard/Web backend without mixing session IDs, history, or event streams.
 
 ## MVP features
 
-- Responsive session list (desktop split view, mobile navigation)
-- Create and resume native Hermes sessions
-- Search sessions by title and preview text
-- Record voice messages and transcribe them through Hermes' built-in `/api/audio/transcribe` endpoint
-- Stream assistant responses and structured tool activity over `/api/ws`
+- Responsive, fully paginated session list including root, compression-child, and `delegate_task` sessions
+- Create and resume persistent Hermes sessions
+- Search sessions by title, preview, source, or ID
+- Stream assistant responses and structured tool activity through controllable API runs
 - Review dangerous tool requests and allow once, always allow, or deny
-- Interrupt a running response
+- Stop a running response through the server-side run control endpoint
+- Optionally transcribe voice input through the Dashboard/Web backend
 - Group four or more consecutive tool calls with expandable details
-- Store backend URL and credentials in platform secure storage
-- Per-session model selection via gateway protocol
+- Store API and optional Dashboard credentials in platform secure storage
+- Show cumulative token usage and enabled API-server toolsets
+
+The API Server currently does not expose audio transcription, interactive clarify responses, detailed context composition, or per-session model switching. Audio transcription can be restored safely through the optional Dashboard route; the other Dashboard RPCs remain disabled to keep the API session/runtime path coherent.
 
 ## Hermes setup
 
-Run an authenticated `hermes serve` backend. Hermes Chat supports the same username/password login used by Hermes Desktop:
+Enable Hermes Agent's authenticated API Server and connect using its URL and `API_SERVER_KEY`. The default local endpoint is:
 
-```bash
-hermes serve --host 0.0.0.0 --port 9119
+```text
+http://127.0.0.1:8642
 ```
 
-The server must have `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, a password or password hash, and a stable `HERMES_DASHBOARD_BASIC_AUTH_SECRET` configured. Keep it on a trusted network such as Tailscale; never expose a password-authenticated Hermes backend directly to the public internet.
+For a phone, publish it through a trusted encrypted network such as Tailscale and use HTTPS, for example `https://host.example.ts.net:8643`. Never expose the API key or an unencrypted public endpoint.
 
 HTTPS is required for public hosts. Plain HTTP is accepted only for localhost, private-network addresses, and Tailscale hosts because the underlying tunnel already encrypts tailnet traffic.
 

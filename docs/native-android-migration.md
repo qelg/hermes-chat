@@ -4,28 +4,22 @@ Hermes Chat is now a native Kotlin/Jetpack Compose Android client. The Flutter c
 
 ## Architecture
 
-- `HermesClient`: OkHttp WebSocket/HTTP transport for Hermes Desktop, with JSON-RPC request correlation, event Flow, cookies/token auth, bounded reconnect backoff, session history, and `/api/audio/transcribe`.
-- `ChatViewModel`: unidirectional `StateFlow<ChatUiState>`, session/runtime-ID mapping, streaming timeline updates, approval/cancel actions, and `SavedStateHandle` restoration after process recreation.
-- `SecureCredentials`: Android Keystore-backed encrypted preferences.
-- Compose UI: adaptive session/chat layout, search/create/resume, streaming messages, grouped semantic tool cards, Markdown, approval prompts, cancellation, and voice recording/transcription.
+- `HermesClient`: OkHttp REST/SSE transport for the coherent API Server session/runtime path, plus an isolated optional Dashboard transcription helper.
+- `ChatViewModel`: unidirectional `StateFlow<ChatUiState>`, persistent-session mapping, streaming timeline updates, cancellation, and `SavedStateHandle` restoration after process recreation.
+- `SecureCredentials`: Android Keystore-backed encrypted preferences for API and optional Dashboard credentials.
+- Compose UI: adaptive session/chat layout, complete child-aware session search, optional Dashboard voice input, streaming messages, grouped semantic tool cards, and Markdown.
 
 ## Protocol compatibility
 
-WebSocket URL: `<server>/api/ws?token=…` for token auth, or `<server>/api/ws?ticket=…` after password login and `POST /api/auth/ws-ticket`.
+All session/runtime requests use `Authorization: Bearer <API_SERVER_KEY>`. The client verifies the endpoint through `GET /v1/capabilities`, reads every session page through `/api/sessions?include_children=true`, and submits controllable turns through `POST /v1/runs`. It then consumes structured events from `GET /v1/runs/{run_id}/events`. Root sessions, compression children, and `delegate_task` children are all retained in the UI.
 
-JSON-RPC request:
+Optional transcription is the only independently routed function. It calls the Dashboard's `/api/audio/transcribe` with either a Dashboard session token or password-authenticated cookie. Session IDs, history, runtime events, interrupt, and approvals remain atomically on the API Server.
 
-```json
-{"jsonrpc":"2.0","id":"mobile-1","method":"session.list","params":{"limit":200}}
-```
+The run events `message.delta`, `tool.started`, `tool.completed`, `approval.request`, `run.completed`, `run.failed`, and `run.cancelled` are translated into the existing timeline model. Approval decisions use `POST /v1/runs/{run_id}/approval`; stopping uses `POST /v1/runs/{run_id}/stop`, which interrupts the server-side agent before the client closes its event stream.
 
-Server event:
+The client follows SessionDB compression children to the newest lineage leaf before continuing a conversation, while keeping the root session selected in the UI.
 
-```json
-{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"runtime-id","payload":{"text":"Hello"}}}
-```
-
-Audio transcription uses `POST /api/audio/transcribe` with `{ "data_url": "data:audio/mp4;base64,…", "mime_type": "audio/mp4" }` and reads `transcript` from the response.
+The API Server shares Hermes' persistent session database but deliberately omits the dashboard's audio transcription, detailed context breakdown, clarify responses, and per-session model-switching RPCs.
 
 ## Build and test
 
