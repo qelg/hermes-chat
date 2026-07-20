@@ -349,6 +349,7 @@ private fun ChatPane(
     onBack: (() -> Unit)? = null,
 ) {
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
+    var showModels by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
@@ -416,6 +417,15 @@ private fun ChatPane(
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 actions = {
+                    IconButton(
+                        onClick = {
+                            showModels = true
+                            vm.refreshModels()
+                        },
+                        enabled = !state.active && !state.connecting,
+                    ) {
+                        Icon(Icons.Default.SmartToy, "Choose model")
+                    }
                     if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
                 },
             )
@@ -599,6 +609,18 @@ private fun ChatPane(
                 )
             null -> Unit
         }
+    }
+    if (showModels) {
+        ModelPickerDialog(
+            catalog = state.modelCatalog,
+            loading = state.modelLoading,
+            onRefresh = vm::refreshModels,
+            onSelect = {
+                vm.selectModel(it)
+                showModels = false
+            },
+            onDismiss = { showModels = false },
+        )
     }
     if (showUsageDetails) {
         TokenUsageBottomSheet(

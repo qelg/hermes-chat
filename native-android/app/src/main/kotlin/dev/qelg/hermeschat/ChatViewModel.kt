@@ -88,6 +88,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var historyRequestVersion = 0L
     private var liveMessageSequence = 0L
     private val runtimeToStored = mutableMapOf<String, String>()
+    private val sessionModelOverrides = mutableMapOf<String, String>()
 
     init {
         credentials.load()?.let(::connect)
@@ -145,6 +146,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeId = null
         usageStoredId = null
         runtimeToStored.clear()
+        sessionModelOverrides.clear()
         val version = ++connectionVersion
         val next = HermesClient(config, viewModelScope)
         client = next
@@ -208,6 +210,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         client?.close()
         client = null
         runtimeToStored.clear()
+        sessionModelOverrides.clear()
         credentials.clear()
         runtimeId = null
         usageStoredId = null
@@ -257,22 +260,43 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private suspend fun refreshSessions(api: HermesClient, version: Long) {
         val result = api.sessions()
         if (client !== api || connectionVersion != version) return
-        val sessions = result.map(HermesSession::fromJson).filter { it.id.isNotBlank() }
+        val sessions =
+            applySessionModelOverrides(
+                result.map(HermesSession::fromJson).filter { it.id.isNotBlank() },
+                sessionModelOverrides,
+            )
         _state.update {
+            val selectedSession = sessions.firstOrNull { session -> session.id == it.selectedId }
+            val selectedModel =
+                it.selectedId?.let { selectedId ->
+                    sessionModelForLineage(selectedId, runtimeId, sessions, sessionModelOverrides)
+                }
             it.copy(
                 sessions = sessions,
                 unreadCounts = remapUnread(it.unreadCounts, sessions),
                 connecting = false,
+                modelCatalog =
+                    if (selectedSession != null) it.modelCatalog.selectedFor(selectedModel)
+                    else it.modelCatalog,
             )
         }
     }
 
-    private suspend fun refreshModels(api: HermesClient, sessionId: String?, version: Long) {
-        val catalog = api.modelOptions(sessionId)
+    private suspend fun refreshModels(api: HermesClient, session: HermesSession?, version: Long) {
+        val selectedModel =
+            session?.let {
+                sessionModelForLineage(
+                    it.id,
+                    runtimeId,
+                    state.value.sessions,
+                    sessionModelOverrides,
+                )
+            }
+        val catalog = api.modelOptions(selectedModel)
         if (
             client !== api ||
                 connectionVersion != version ||
-                (sessionId != null && runtimeId != sessionId)
+                (session != null && state.value.selectedId != session.id)
         )
             return
         _state.update { it.copy(modelCatalog = catalog, modelLoading = false) }
@@ -281,9 +305,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun refreshModels() {
         val api = client ?: return
         val version = connectionVersion
+        val session = state.value.sessions.firstOrNull { it.id == state.value.selectedId }
         _state.update { it.copy(modelLoading = true) }
         viewModelScope.launch {
-            runCatching { refreshModels(api, runtimeId, version) }
+            runCatching { refreshModels(api, session, version) }
                 .onFailure {
                     if (client === api) {
                         _state.update { state -> state.copy(modelLoading = false) }
@@ -294,8 +319,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun selectModel(selection: ModelSelection) {
+        val selectedId = state.value.selectedId ?: return
+        sessionModelOverrides[selectedId] = selection.model
         _state.update {
-            it.copy(error = ErrorMessage("The Hermes API Server does not support model switching."))
+            it.copy(
+                modelCatalog = it.modelCatalog.copy(selected = selection),
+                sessions = sessionsWithModelSelection(it.sessions, selectedId, selection),
+                error = null,
+            )
         }
     }
 
@@ -374,11 +405,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             runCatching {
                     val selection = state.value.modelCatalog.selected
                     val result = api.createSession(selection?.model)
-                    runtimeId = result.string("id") ?: error("Hermes returned no session ID")
+                    val session = HermesSession.fromJson(result)
+                    runtimeId =
+                        session.id.takeIf(String::isNotBlank)
+                            ?: error("Hermes returned no session ID")
                     val stored = runtimeId!!
                     usageStoredId = stored
                     runtimeToStored[runtimeId!!] = stored
-                    val session = HermesSession(stored, "Untitled session", source = "mobile")
                     savedState["selectedId"] = stored
                     _state.update {
                         it.copy(
@@ -425,16 +458,27 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
+                modelCatalog = modelCatalogForSession(it.modelCatalog, session),
             )
         }
         selectionJob =
             viewModelScope.launch {
                 runCatching {
                         if (selectionVersion != version || client !== api) return@runCatching
-                        val latestSessionId = api.latestSessionId(session.id)
+                        val latestSession = api.latestSession(session.id)
+                        val latestSessionId = latestSession.string("id") ?: session.id
                         runtimeId = latestSessionId
                         usageStoredId = latestSessionId
                         runtimeToStored[latestSessionId] = session.id
+                        val selectedModel =
+                            sessionModelOverrides[session.id]
+                                ?: latestSession.string("model")
+                                ?: sessionModelForLineage(
+                                    session.id,
+                                    latestSessionId,
+                                    state.value.sessions,
+                                    sessionModelOverrides,
+                                )
                         val baseline = state.value.items
                         val historyVersion = ++historyRequestVersion
                         val history = messagesFromHistoryRows(api.history(latestSessionId))
@@ -446,16 +490,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             return@runCatching
                         _state.update {
                             val items = reconcileHistoryItems(history, it.items, baseline)
-                            if (items === it.items)
-                                it.copy(connecting = false, historyLoadedFor = session.id)
-                            else
-                                it.copy(
-                                    items = items,
-                                    connecting = false,
-                                    historyLoadedFor = session.id,
-                                )
+                            it.copy(
+                                items = items,
+                                connecting = false,
+                                historyLoadedFor = session.id,
+                                modelCatalog = it.modelCatalog.selectedFor(selectedModel),
+                            )
                         }
-                        refreshModels(api, session.id, connectionVersion)
                         refreshTokenUsage()
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
@@ -466,6 +507,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val clean = text.trim()
         if (clean.isEmpty() || state.value.active || state.value.connecting) return
         val storedId = state.value.selectedId ?: return
+        val model = state.value.modelCatalog.selected?.model
         val submittedDraft = captureDraftSubmission(storedId, text)
         _state.update { it.copy(active = true, error = null) }
         viewModelScope.launch {
@@ -485,7 +527,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                     )
                         )
                     }
-                    client?.submit(id, clean) ?: error("Not connected")
+                    client?.submit(id, clean, model) ?: error("Not connected")
                 }
                 .onSuccess { submittedDraft?.let(::clearDraft) }
                 .onFailure {
