@@ -4,14 +4,16 @@ Hermes Chat is now a native Kotlin/Jetpack Compose Android client. The Flutter c
 
 ## Architecture
 
-- `HermesClient`: OkHttp REST/SSE transport for Hermes Agent's API Server, with Bearer authentication, persistent session resources, event translation, and cancellable streamed turns.
+- `HermesClient`: OkHttp REST/SSE transport for the coherent API Server session/runtime path, plus an isolated optional Dashboard transcription helper.
 - `ChatViewModel`: unidirectional `StateFlow<ChatUiState>`, persistent-session mapping, streaming timeline updates, cancellation, and `SavedStateHandle` restoration after process recreation.
-- `SecureCredentials`: Android Keystore-backed encrypted preferences.
-- Compose UI: adaptive session/chat layout, search/create/resume, streaming messages, grouped semantic tool cards, and Markdown.
+- `SecureCredentials`: Android Keystore-backed encrypted preferences for API and optional Dashboard credentials.
+- Compose UI: adaptive session/chat layout, complete child-aware session search, optional Dashboard voice input, streaming messages, grouped semantic tool cards, and Markdown.
 
 ## Protocol compatibility
 
-All requests use `Authorization: Bearer <API_SERVER_KEY>`. The client verifies the endpoint through `GET /v1/capabilities`, reads sessions through `/api/sessions`, and submits controllable turns through `POST /v1/runs`. It then consumes structured events from `GET /v1/runs/{run_id}/events`.
+All session/runtime requests use `Authorization: Bearer <API_SERVER_KEY>`. The client verifies the endpoint through `GET /v1/capabilities`, reads every session page through `/api/sessions?include_children=true`, and submits controllable turns through `POST /v1/runs`. It then consumes structured events from `GET /v1/runs/{run_id}/events`. Root sessions, compression children, and `delegate_task` children are all retained in the UI.
+
+Optional transcription is the only independently routed function. It calls the Dashboard's `/api/audio/transcribe` with either a Dashboard session token or password-authenticated cookie. Session IDs, history, runtime events, interrupt, and approvals remain atomically on the API Server.
 
 The run events `message.delta`, `tool.started`, `tool.completed`, `approval.request`, `run.completed`, `run.failed`, and `run.cancelled` are translated into the existing timeline model. Approval decisions use `POST /v1/runs/{run_id}/approval`; stopping uses `POST /v1/runs/{run_id}/stop`, which interrupts the server-side agent before the client closes its event stream.
 

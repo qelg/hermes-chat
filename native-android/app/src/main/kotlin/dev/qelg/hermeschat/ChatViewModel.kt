@@ -56,6 +56,7 @@ data class ChatUiState(
     val modelCatalog: ModelCatalog = ModelCatalog(),
     val modelLoading: Boolean = false,
     val transcribing: Boolean = false,
+    val transcriptionEnabled: Boolean = false,
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
     val error: ErrorMessage? = null,
@@ -109,6 +110,28 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             _state.update { it.copy(error = ErrorMessage("API key is required.")) }
             return
         }
+        if (
+            config.transcriptionBackend == TranscriptionBackend.DASHBOARD &&
+                !config.isAllowedDashboardEndpoint()
+        ) {
+            _state.update { it.copy(error = ErrorMessage("A valid Dashboard URL is required.")) }
+            return
+        }
+        if (
+            config.transcriptionBackend == TranscriptionBackend.DASHBOARD &&
+                config.dashboardToken.isBlank() &&
+                (config.username.isBlank() || config.password.isBlank())
+        ) {
+            _state.update {
+                it.copy(
+                    error =
+                        ErrorMessage(
+                            "Dashboard token or Dashboard username and password are required."
+                        )
+                )
+            }
+            return
+        }
         credentials.save(config)
         draftNamespace = config.normalizedBaseUrl
         val drafts = draftStore.load(draftNamespace)
@@ -141,6 +164,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
+                transcriptionEnabled = config.transcriptionBackend == TranscriptionBackend.DASHBOARD,
             )
         }
         eventJob =

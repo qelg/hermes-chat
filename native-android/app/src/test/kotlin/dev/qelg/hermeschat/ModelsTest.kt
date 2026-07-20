@@ -36,14 +36,33 @@ import org.junit.Test
 
 class ModelsTest {
     @Test
-    fun searchMatchesTitleAndPreviewCaseInsensitively() {
+    fun searchMatchesTitlePreviewSourceAndIdCaseInsensitively() {
         val sessions =
             listOf(
                 HermesSession("1", "Release Work", preview = "APK ready"),
-                HermesSession("2", "Notes"),
+                HermesSession("delegate-42", "Notes", source = "delegate_task"),
             )
         assertEquals(listOf("1"), filterSessions(sessions, "apk").map { it.id })
         assertEquals(listOf("1"), filterSessions(sessions, "RELEASE").map { it.id })
+        assertEquals(listOf("delegate-42"), filterSessions(sessions, "DELEGATE").map { it.id })
+        assertEquals(listOf("delegate-42"), filterSessions(sessions, "42").map { it.id })
+    }
+
+    @Test
+    fun childAndCompressionSessionFieldsAreDecoded() {
+        val session =
+            HermesSession.fromJson(
+                buildJsonObject {
+                    put("id", "child")
+                    put("source", "delegate_task")
+                    put("parent_session_id", "root")
+                    put("end_reason", "compression")
+                }
+            )
+
+        assertEquals("delegate_task", session.source)
+        assertEquals("root", session.parentSessionId)
+        assertEquals("compression", session.endReason)
     }
 
     @Test

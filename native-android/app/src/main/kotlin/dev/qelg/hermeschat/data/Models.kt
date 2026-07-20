@@ -16,6 +16,8 @@ data class HermesSession(
     val preview: String? = null,
     val active: Boolean = false,
     val runtimeId: String? = null,
+    val parentSessionId: String? = null,
+    val endReason: String? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HermesSession {
@@ -40,6 +42,8 @@ data class HermesSession(
                         ?: value.string("session_id")?.takeIf {
                             value.string("id") != null && it != id
                         },
+                parentSessionId = value.string("parent_session_id"),
+                endReason = value.string("end_reason"),
             )
         }
     }
@@ -49,7 +53,10 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
     val needle = query.trim().lowercase()
     if (needle.isEmpty()) return sessions
     return sessions.filter {
-        it.title.lowercase().contains(needle) || it.preview?.lowercase()?.contains(needle) == true
+        it.title.lowercase().contains(needle) ||
+            it.preview?.lowercase()?.contains(needle) == true ||
+            it.source?.lowercase()?.contains(needle) == true ||
+            it.id.lowercase().contains(needle)
     }
 }
 
@@ -435,33 +442,50 @@ data class ClarifyRequest(
     val choices: List<String> = emptyList(),
 )
 
+enum class TranscriptionBackend {
+    DISABLED,
+    DASHBOARD,
+}
+
 data class ConnectionConfig(
     val baseUrl: String,
     val username: String = "",
     val password: String = "",
     val token: String = "",
+    val dashboardBaseUrl: String = "",
+    val dashboardToken: String = "",
+    val transcriptionBackend: TranscriptionBackend = TranscriptionBackend.DISABLED,
 ) {
     val normalizedBaseUrl: String
-        get() {
-            val trimmed = baseUrl.trim().trimEnd('/')
-            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
-            val scheme = uri.scheme?.lowercase() ?: return trimmed
-            val host = uri.host?.lowercase()?.trimEnd('.') ?: return trimmed
-            if (
-                uri.userInfo != null ||
-                    uri.rawQuery != null ||
-                    uri.rawFragment != null ||
-                    uri.rawPath !in setOf("", "/")
-            )
-                return trimmed
-            val defaultPort =
-                (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
-            val port = if (defaultPort) -1 else uri.port
-            return URI(scheme, null, host, port, null, null, null).toString()
-        }
+        get() = normalizeEndpoint(baseUrl)
 
-    fun isAllowedEndpoint(): Boolean {
-        val uri = runCatching { URI(normalizedBaseUrl) }.getOrNull() ?: return false
+    val normalizedDashboardBaseUrl: String
+        get() = normalizeEndpoint(dashboardBaseUrl)
+
+    private fun normalizeEndpoint(value: String): String {
+        val trimmed = value.trim().trimEnd('/')
+        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
+        val scheme = uri.scheme?.lowercase() ?: return trimmed
+        val host = uri.host?.lowercase()?.trimEnd('.') ?: return trimmed
+        if (
+            uri.userInfo != null ||
+                uri.rawQuery != null ||
+                uri.rawFragment != null ||
+                uri.rawPath !in setOf("", "/")
+        )
+            return trimmed
+        val defaultPort =
+            (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
+        val port = if (defaultPort) -1 else uri.port
+        return URI(scheme, null, host, port, null, null, null).toString()
+    }
+
+    fun isAllowedEndpoint(): Boolean = isAllowedEndpoint(normalizedBaseUrl)
+
+    fun isAllowedDashboardEndpoint(): Boolean = isAllowedEndpoint(normalizedDashboardBaseUrl)
+
+    private fun isAllowedEndpoint(value: String): Boolean {
+        val uri = runCatching { URI(value) }.getOrNull() ?: return false
         val scheme = uri.scheme?.lowercase() ?: return false
         val host = uri.host?.lowercase()?.trim('[', ']')?.trimEnd('.') ?: return false
         if (

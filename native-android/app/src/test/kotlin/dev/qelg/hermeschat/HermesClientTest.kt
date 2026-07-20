@@ -1,7 +1,9 @@
 package dev.qelg.hermeschat
 
 import dev.qelg.hermeschat.data.ConnectionConfig
+import dev.qelg.hermeschat.data.DashboardTranscriptionClient
 import dev.qelg.hermeschat.data.HermesClient
+import dev.qelg.hermeschat.data.TranscriptionBackend
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -46,25 +48,108 @@ class HermesClientTest {
     }
 
     @Test
-    fun sessionsUseRestResourceAndDecodeRichListData() = runBlocking {
+    fun sessionsIncludeChildrenAndFollowAllApiPages() = runBlocking {
         withClient(
             MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody(
-                    """{"object":"list","data":[{"id":"stored-1","title":"REST session","last_active":1784390400,"source":"api_server","preview":"More metadata","message_count":12}],"limit":200,"offset":0,"has_more":false}"""
-                )
+                    """{"object":"list","data":[{"id":"root","title":"Root"},{"id":"delegate","source":"delegate_task","parent_session_id":"root"}],"limit":200,"offset":0,"has_more":true}"""
+                ),
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"object":"list","data":[{"id":"compression","parent_session_id":"root","end_reason":"compression"}],"limit":200,"offset":200,"has_more":false}"""
+                ),
         ) { client, server ->
             val sessions = client.sessions()
 
-            assertEquals(1, sessions.size)
-            assertEquals("stored-1", sessions.single()["id"]?.jsonPrimitive?.contentOrNull)
             assertEquals(
-                "More metadata",
-                sessions.single()["preview"]?.jsonPrimitive?.contentOrNull,
+                listOf("root", "delegate", "compression"),
+                sessions.map { it["id"]?.jsonPrimitive?.contentOrNull },
             )
-            val request = server.takeRequest()
-            assertEquals("/api/sessions?limit=200", request.path)
-            assertEquals("Bearer api-key", request.getHeader("Authorization"))
+            assertEquals(
+                "/api/sessions?limit=200&offset=0&include_children=true",
+                server.takeRequest().path,
+            )
+            assertEquals(
+                "/api/sessions?limit=200&offset=200&include_children=true",
+                server.takeRequest().path,
+            )
+        }
+    }
+
+    @Test
+    fun transcriptionCanUseDashboardWithoutChangingSessionRuntimeBackend() = runBlocking {
+        val dashboard = MockWebServer()
+        dashboard.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"transcript":"dashboard text"}""")
+        )
+        dashboard.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client =
+            HermesClient(
+                ConnectionConfig(
+                    baseUrl = "https://api.example.test",
+                    token = "api-key",
+                    dashboardBaseUrl = dashboard.url("/").toString(),
+                    dashboardToken = "dashboard-token",
+                    transcriptionBackend = TranscriptionBackend.DASHBOARD,
+                ),
+                scope,
+            )
+        try {
+            assertEquals(
+                "dashboard text",
+                client.transcribe("audio".encodeToByteArray(), "audio/mp4"),
+            )
+            val request = dashboard.takeRequest()
+            assertEquals("/api/audio/transcribe", request.path)
+            assertEquals("dashboard-token", request.getHeader("X-Hermes-Session-Token"))
+            assertEquals(null, request.getHeader("Authorization"))
+        } finally {
+            client.close()
+            scope.cancel()
+            dashboard.shutdown()
+        }
+    }
+
+    @Test
+    fun dashboardTranscriptionSupportsPasswordLoginCookies() = runBlocking {
+        val dashboard = MockWebServer()
+        dashboard.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setHeader("Set-Cookie", "session=authenticated; Path=/")
+                .setBody("{}")
+        )
+        dashboard.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"transcript":"cookie text"}""")
+        )
+        dashboard.start()
+        val client =
+            DashboardTranscriptionClient(
+                ConnectionConfig(
+                    baseUrl = "https://api.example.test",
+                    dashboardBaseUrl = dashboard.url("/").toString(),
+                    username = "mobile",
+                    password = "secret",
+                    transcriptionBackend = TranscriptionBackend.DASHBOARD,
+                )
+            )
+        try {
+            client.authenticate()
+            assertEquals("cookie text", client.transcribe(byteArrayOf(1), "audio/mp4"))
+            assertEquals("/auth/password-login", dashboard.takeRequest().path)
+            val transcribe = dashboard.takeRequest()
+            assertEquals("/api/audio/transcribe", transcribe.path)
+            assertTrue(transcribe.getHeader("Cookie")?.contains("session=authenticated") == true)
+        } finally {
+            client.close()
+            dashboard.shutdown()
         }
     }
 
@@ -450,13 +535,13 @@ class HermesClientTest {
     }
 
     @Test
-    fun transcriptionExplainsThatApiServerDoesNotExposeAudio() = runBlocking {
+    fun transcriptionExplainsWhenNoBackendIsConfigured() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client = HermesClient(ConnectionConfig("https://example.com", token = "api-key"), scope)
         try {
             val error =
                 runCatching { client.transcribe(byteArrayOf(1), "audio/mp4") }.exceptionOrNull()
-            assertTrue(error?.message.orEmpty().contains("not support audio transcription"))
+            assertTrue(error?.message.orEmpty().contains("not configured"))
         } finally {
             client.close()
             scope.cancel()

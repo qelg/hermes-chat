@@ -8,21 +8,22 @@ A native Kotlin/Jetpack Compose Android client for Hermes Agent.
 
 This stable link is updated automatically after every successful CI build on `main`.
 
-The app connects to Hermes Agent's authenticated API Server. It uses the same persistent session database as the dashboard, while exposing a deliberately client-safe subset over REST and SSE.
+The app uses Hermes Agent's authenticated API Server for the coherent session/chat runtime. Optional voice transcription can be routed separately through the Dashboard/Web backend without mixing session IDs, history, or event streams.
 
 ## MVP features
 
-- Responsive session list (desktop split view, mobile navigation)
+- Responsive, fully paginated session list including root, compression-child, and `delegate_task` sessions
 - Create and resume persistent Hermes sessions
-- Search sessions by title and preview text
+- Search sessions by title, preview, source, or ID
 - Stream assistant responses and structured tool activity through controllable API runs
 - Review dangerous tool requests and allow once, always allow, or deny
 - Stop a running response through the server-side run control endpoint
+- Optionally transcribe voice input through the Dashboard/Web backend
 - Group four or more consecutive tool calls with expandable details
-- Store the API Server URL and API key in platform secure storage
+- Store API and optional Dashboard credentials in platform secure storage
 - Show cumulative token usage and enabled API-server toolsets
 
-The API Server currently does not expose audio transcription, interactive clarify responses, detailed context composition, or per-session model switching. Those controls are therefore not offered by the app.
+The API Server currently does not expose audio transcription, interactive clarify responses, detailed context composition, or per-session model switching. Audio transcription can be restored safely through the optional Dashboard route; the other Dashboard RPCs remain disabled to keep the API session/runtime path coherent.
 
 ## Hermes setup
 

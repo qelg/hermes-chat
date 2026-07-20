@@ -41,6 +41,10 @@ class HermesClient(
     @Volatile private var stopRequested = false
     private var toolSequence = 0L
     private val runningToolIds = mutableMapOf<String, java.util.ArrayDeque<String>>()
+    private val dashboardTranscription =
+        if (config.transcriptionBackend == TranscriptionBackend.DASHBOARD)
+            DashboardTranscriptionClient(config)
+        else null
 
     suspend fun connect() {
         check(!closed) { "Hermes client is closed" }
@@ -49,6 +53,7 @@ class HermesClient(
         check(capabilities.string("platform") == "hermes-agent") {
             "Endpoint is not a Hermes API Server"
         }
+        dashboardTranscription?.authenticate()
         connected = true
     }
 
@@ -72,10 +77,22 @@ class HermesClient(
     }
 
     suspend fun sessions(): List<JsonObject> {
-        val response = http("GET", "/api/sessions?limit=200")
-        return ((response["data"] as? JsonArray) ?: (response["sessions"] as? JsonArray))
-            ?.mapNotNull { it as? JsonObject }
-            .orEmpty()
+        val result = mutableListOf<JsonObject>()
+        var offset = 0
+        var pages = 0
+        do {
+            val response =
+                http("GET", "/api/sessions?limit=200&offset=$offset&include_children=true")
+            result +=
+                ((response["data"] as? JsonArray) ?: (response["sessions"] as? JsonArray))
+                    ?.mapNotNull { it as? JsonObject }
+                    .orEmpty()
+            val hasMore = response["has_more"]?.jsonPrimitive?.contentOrNull == "true"
+            pages++
+            check(!hasMore || pages < 100) { "Hermes session pagination exceeded 100 pages" }
+            offset += 200
+        } while (hasMore)
+        return result.distinctBy { it.string("id") }
     }
 
     suspend fun createSession(model: String? = null): JsonObject {
@@ -435,9 +452,8 @@ class HermesClient(
     }
 
     suspend fun transcribe(bytes: ByteArray, mimeType: String): String =
-        throw UnsupportedOperationException(
-            "The Hermes API Server does not support audio transcription"
-        )
+        dashboardTranscription?.transcribe(bytes, mimeType)
+            ?: throw UnsupportedOperationException("Voice transcription is not configured")
 
     private suspend fun http(method: String, path: String, body: JsonObject? = null): JsonObject =
         withContext(Dispatchers.IO) {
@@ -474,6 +490,7 @@ class HermesClient(
         activeCall?.cancel()
         activeCall = null
         eventChannel.close()
+        dashboardTranscription?.close()
         client.connectionPool.evictAll()
     }
 
