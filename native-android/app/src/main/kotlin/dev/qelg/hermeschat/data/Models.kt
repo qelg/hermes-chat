@@ -577,3 +577,59 @@ fun isSafeExternalUrl(value: String): Boolean {
 }
 
 internal fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+fun buildSessionTree(sessions: List<HermesSession>): Map<String, List<HermesSession>> {
+    val byParent = mutableMapOf<String, MutableList<HermesSession>>()
+    for (s in sessions) {
+        val parent = s.parentSessionId ?: continue
+        byParent.getOrPut(parent) { mutableListOf() } += s
+    }
+    return byParent
+}
+
+fun childCount(sessions: List<HermesSession>, sessionId: String): Int {
+    val tree = buildSessionTree(sessions)
+    val visited = mutableSetOf<String>()
+    val queue = ArrayDeque<String>()
+    queue.addAll(tree[sessionId].orEmpty().map { it.id })
+    while (queue.isNotEmpty()) {
+        val id = queue.removeFirst()
+        if (!visited.add(id)) continue
+        queue.addAll(tree[id].orEmpty().map { it.id })
+    }
+    return visited.size
+}
+
+fun rootSessions(sessions: List<HermesSession>): List<HermesSession> =
+    sessions.filter { it.parentSessionId == null }
+
+fun sessionWithChildren(
+    parent: HermesSession,
+    tree: Map<String, List<HermesSession>>,
+): List<HermesSession> {
+    val result = mutableListOf(parent)
+    val children = tree[parent.id].orEmpty()
+    for (child in children) {
+        result += sessionWithChildren(child, tree)
+    }
+    return result
+}
+
+data class TreeNode(val session: HermesSession, val depth: Int)
+
+fun sessionTreeWithDepth(
+    sessions: List<HermesSession>,
+    parentId: String,
+): List<TreeNode> {
+    val tree = buildSessionTree(sessions)
+    val result = mutableListOf<TreeNode>()
+    fun walk(id: String, depth: Int) {
+        val session = sessions.firstOrNull { it.id == id } ?: return
+        result += TreeNode(session, depth)
+        for (child in tree[id].orEmpty()) {
+            walk(child.id, depth + 1)
+        }
+    }
+    walk(parentId, 0)
+    return result
+}

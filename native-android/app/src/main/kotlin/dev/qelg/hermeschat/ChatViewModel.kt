@@ -46,6 +46,7 @@ data class ChatUiState(
     val sessions: List<HermesSession> = emptyList(),
     val search: String = "",
     val selectedId: String? = null,
+    val treeParentId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
     val unreadCounts: Map<String, Int> = emptyMap(),
     val readUpdates: Map<String, String> = emptyMap(),
@@ -219,6 +220,30 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
+
+    fun showTree(session: HermesSession) {
+        val tree = buildSessionTree(state.value.sessions)
+        if (tree[session.id].isNullOrEmpty()) {
+            select(session)
+            return
+        }
+        _state.update { it.copy(treeParentId = session.id) }
+    }
+
+    fun hideTree() = _state.update { it.copy(treeParentId = null) }
+
+    fun dismissChat() {
+        runtimeId = null
+        _state.update { it.copy(selectedId = null, treeParentId = null) }
+    }
+
+    fun backFromChat() {
+        runtimeId = null
+        _state.update {
+            if (it.treeParentId != null) it.copy(selectedId = null)
+            else it.copy(selectedId = null, treeParentId = null)
+        }
+    }
 
     fun setDraft(text: String) {
         val sessionId = state.value.selectedId ?: return
@@ -441,8 +466,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         usageJob?.cancel()
         val version = ++selectionVersion
-        runtimeId = null
+        runtimeId = session.id
         usageStoredId = session.id
+        runtimeToStored[session.id] = session.id
         savedState["selectedId"] = session.id
         _state.update {
             val keepTimeline = it.selectedId == session.id
@@ -459,29 +485,25 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 reconnectSeconds = null,
                 tokenUsage = null,
                 modelCatalog = modelCatalogForSession(it.modelCatalog, session),
+                treeParentId = null,
             )
         }
         selectionJob =
             viewModelScope.launch {
                 runCatching {
                         if (selectionVersion != version || client !== api) return@runCatching
-                        val latestSession = api.latestSession(session.id)
-                        val latestSessionId = latestSession.string("id") ?: session.id
-                        runtimeId = latestSessionId
-                        usageStoredId = latestSessionId
-                        runtimeToStored[latestSessionId] = session.id
                         val selectedModel =
                             sessionModelOverrides[session.id]
-                                ?: latestSession.string("model")
+                                ?: session.model
                                 ?: sessionModelForLineage(
                                     session.id,
-                                    latestSessionId,
+                                    session.id,
                                     state.value.sessions,
                                     sessionModelOverrides,
                                 )
                         val baseline = state.value.items
                         val historyVersion = ++historyRequestVersion
-                        val history = messagesFromHistoryRows(api.history(latestSessionId))
+                        val history = messagesFromHistoryRows(api.history(session.id))
                         if (
                             selectionVersion != version ||
                                 historyRequestVersion != historyVersion ||

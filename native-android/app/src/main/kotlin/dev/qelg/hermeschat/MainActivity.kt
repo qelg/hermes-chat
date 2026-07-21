@@ -195,22 +195,63 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
 @Composable
 private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
+    val inTree = state.treeParentId != null
+    val inChat = state.selectedId != null
+    val treeSessions = remember(state.sessions, state.treeParentId) {
+        state.treeParentId?.let { sessionTreeWithDepth(state.sessions, it) }.orEmpty()
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 760.dp
-        // On narrow layouts, the system back button must return to the session
-        // list instead of closing the app when a chat is open.
-        BackHandler(enabled = !wide && !showSessions && state.selectedId != null) {
-            showSessions = true
+        BackHandler(
+            enabled =
+                !wide &&
+                    (!showSessions) &&
+                    (inChat || inTree)
+        ) {
+            if (inChat) {
+                vm.backFromChat()
+                if (!inTree) showSessions = true
+            } else if (inTree) {
+                showSessions = true
+                vm.hideTree()
+            }
         }
-        if (wide)
+        if (wide) {
             Row {
-                SessionPane(state, vm, Modifier.width(320.dp).fillMaxHeight()) {}
+                SessionPane(state, vm, Modifier.width(300.dp).fillMaxHeight()) {}
                 VerticalDivider()
+                if (inTree) {
+                    TreePane(
+                        state,
+                        vm,
+                        treeSessions,
+                        Modifier.width(300.dp).fillMaxHeight(),
+                    )
+                    VerticalDivider()
+                }
                 ChatPane(state, vm, Modifier.weight(1f))
             }
-        else if (showSessions || state.selectedId == null)
-            SessionPane(state, vm, Modifier.fillMaxSize()) { showSessions = false }
-        else ChatPane(state, vm, Modifier.fillMaxSize(), onBack = { showSessions = true })
+        } else {
+            when {
+                showSessions || (!inTree && !inChat) ->
+                    SessionPane(state, vm, Modifier.fillMaxSize()) { showSessions = false }
+                inTree && !inChat -> {
+                    TreePane(
+                        state,
+                        vm,
+                        treeSessions,
+                        Modifier.fillMaxSize(),
+                    )
+                }
+                else -> {
+                    val onBack: () -> Unit = {
+                        vm.backFromChat()
+                        if (!inTree) showSessions = true
+                    }
+                    ChatPane(state, vm, Modifier.fillMaxSize(), onBack = onBack)
+                }
+            }
+        }
     }
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
@@ -222,9 +263,15 @@ private fun SessionPane(
     modifier: Modifier,
     selected: () -> Unit,
 ) {
-    val sessions =
+    val allSessions =
         remember(state.sessions, state.search, state.drafts) {
             prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts)
+        }
+    val sessions =
+        remember(allSessions) { rootSessions(allSessions) }
+    val childCounts =
+        remember(allSessions) {
+            sessions.associateWith { childCount(allSessions, it.id) }
         }
     Column(modifier) {
         TopAppBar(
@@ -264,6 +311,7 @@ private fun SessionPane(
                 val unread = state.unreadCounts[session.id] ?: 0
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
                 val read = isSessionUpdateRead(session, state.readUpdates[session.id])
+                val children = childCounts[session] ?: 0
                 ListItem(
                     headlineContent = { Text(session.title, maxLines = 1) },
                     supportingContent = {
@@ -275,20 +323,15 @@ private fun SessionPane(
                                     color = MaterialTheme.colorScheme.primary,
                                 )
                             else session.preview?.let { Text(it, maxLines = 2) }
-                            val kind =
-                                when {
-                                    session.source == "delegate_task" -> "Delegate task"
-                                    session.endReason == "compression" -> "Compression session"
-                                    session.parentSessionId != null -> "Child session"
-                                    else -> session.source
+                            session.source
+                                ?.takeIf { it.isNotBlank() && it != "mobile" }
+                                ?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                    )
                                 }
-                            kind?.takeIf(String::isNotBlank)?.let {
-                                Text(
-                                    it,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                )
-                            }
                             updated?.let {
                                 Text(
                                     "Latest $it",
@@ -310,6 +353,11 @@ private fun SessionPane(
                     trailingContent = {
                         Column(horizontalAlignment = Alignment.End) {
                             if (draft != null) Badge { Text("DRAFT") }
+                            if (children > 0) {
+                                Badge {
+                                    Text("$children ${if (children == 1) "child" else "children"}")
+                                }
+                            }
                             if (unread > 0) {
                                 Badge { Text("$unread unread") }
                             } else if (updated != null && !read) {
@@ -325,9 +373,128 @@ private fun SessionPane(
                     },
                     modifier =
                         Modifier.clickable {
-                            vm.select(session)
+                            vm.showTree(session)
                             selected()
                         },
+                    colors =
+                        ListItemDefaults.colors(
+                            containerColor =
+                                if (session.id == state.selectedId)
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                else Color.Transparent
+                        ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TreePane(
+    state: ChatUiState,
+    vm: ChatViewModel,
+    nodes: List<TreeNode>,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        TopAppBar(
+            title = {
+                val parent = nodes.firstOrNull()?.session
+                Text(parent?.title ?: "Sessions", maxLines = 1)
+            },
+            windowInsets = WindowInsets(0, 0, 0, 0),
+            navigationIcon = {
+                IconButton(vm::hideTree) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to sessions")
+                }
+            },
+        )
+        if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+        LazyColumn(Modifier.weight(1f)) {
+            items(nodes, key = { it.session.id }) { (session, depth) ->
+                val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
+                val unread = state.unreadCounts[session.id] ?: 0
+                val updated = session.updatedAt?.let(::formatSessionUpdate)
+                val read = isSessionUpdateRead(session, state.readUpdates[session.id])
+                val children = remember(state.sessions) {
+                    childCount(state.sessions, session.id)
+                }
+                val indent = (depth * 24).dp
+                ListItem(
+                    headlineContent = {
+                        Row {
+                            if (depth > 0) Spacer(Modifier.width(indent))
+                            Icon(
+                                if (depth == 0) Icons.Default.AccountTree
+                                else Icons.Default.SubdirectoryArrowRight,
+                                null,
+                                Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(session.title, maxLines = 1)
+                        }
+                    },
+                    supportingContent = {
+                        Row {
+                            if (depth > 0) Spacer(Modifier.width(indent + 28.dp))
+                            Column {
+                                if (draft != null)
+                                    Text(
+                                        "Draft · ${draft.trim()}",
+                                        maxLines = 2,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                else session.preview?.let { Text(it, maxLines = 2) }
+                                val kind =
+                                    when {
+                                        session.endReason == "compression" ->
+                                            "Compression session"
+                                        session.parentSessionId != null -> "Child session"
+                                        session.source?.isNotBlank() == true &&
+                                            session.source != "mobile" -> session.source
+                                        else -> null
+                                    }
+                                kind?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                    )
+                                }
+                                updated?.let {
+                                    Text(
+                                        "Latest $it",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (draft != null) Badge { Text("DRAFT") }
+                            if (children > 0) {
+                                Badge {
+                                    Text(
+                                        "$children ${if (children == 1) "child" else "children"}"
+                                    )
+                                }
+                            }
+                            if (unread > 0) {
+                                Badge { Text("$unread unread") }
+                            } else if (updated != null && !read) {
+                                Badge { Text("Unread") }
+                            } else if (updated != null && read) {
+                                Text(
+                                    "Read",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.clickable { vm.select(session) },
                     colors =
                         ListItemDefaults.colors(
                             containerColor =
