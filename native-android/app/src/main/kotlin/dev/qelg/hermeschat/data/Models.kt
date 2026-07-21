@@ -617,10 +617,7 @@ fun sessionWithChildren(
 
 data class TreeNode(val session: HermesSession, val depth: Int)
 
-fun sessionTreeWithDepth(
-    sessions: List<HermesSession>,
-    parentId: String,
-): List<TreeNode> {
+fun sessionTreeWithDepth(sessions: List<HermesSession>, parentId: String): List<TreeNode> {
     val tree = buildSessionTree(sessions)
     val result = mutableListOf<TreeNode>()
     fun walk(id: String, depth: Int) {

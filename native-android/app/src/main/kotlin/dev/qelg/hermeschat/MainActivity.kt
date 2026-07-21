@@ -197,17 +197,13 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
     val inTree = state.treeParentId != null
     val inChat = state.selectedId != null
-    val treeSessions = remember(state.sessions, state.treeParentId) {
-        state.treeParentId?.let { sessionTreeWithDepth(state.sessions, it) }.orEmpty()
-    }
+    val treeSessions =
+        remember(state.sessions, state.treeParentId) {
+            state.treeParentId?.let { sessionTreeWithDepth(state.sessions, it) }.orEmpty()
+        }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 760.dp
-        BackHandler(
-            enabled =
-                !wide &&
-                    (!showSessions) &&
-                    (inChat || inTree)
-        ) {
+        BackHandler(enabled = !wide && (!showSessions) && (inChat || inTree)) {
             if (inChat) {
                 vm.backFromChat()
                 if (!inTree) showSessions = true
@@ -221,12 +217,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
                 SessionPane(state, vm, Modifier.width(300.dp).fillMaxHeight()) {}
                 VerticalDivider()
                 if (inTree) {
-                    TreePane(
-                        state,
-                        vm,
-                        treeSessions,
-                        Modifier.width(300.dp).fillMaxHeight(),
-                    )
+                    TreePane(state, vm, treeSessions, Modifier.width(300.dp).fillMaxHeight())
                     VerticalDivider()
                 }
                 ChatPane(state, vm, Modifier.weight(1f))
@@ -236,12 +227,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
                 showSessions || (!inTree && !inChat) ->
                     SessionPane(state, vm, Modifier.fillMaxSize()) { showSessions = false }
                 inTree && !inChat -> {
-                    TreePane(
-                        state,
-                        vm,
-                        treeSessions,
-                        Modifier.fillMaxSize(),
-                    )
+                    TreePane(state, vm, treeSessions, Modifier.fillMaxSize())
                 }
                 else -> {
                     val onBack: () -> Unit = {
@@ -267,12 +253,9 @@ private fun SessionPane(
         remember(state.sessions, state.search, state.drafts) {
             prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts)
         }
-    val sessions =
-        remember(allSessions) { rootSessions(allSessions) }
+    val sessions = remember(allSessions) { rootSessions(allSessions) }
     val childCounts =
-        remember(allSessions) {
-            sessions.associateWith { childCount(allSessions, it.id) }
-        }
+        remember(allSessions) { sessions.associateWith { childCount(allSessions, it.id) } }
     Column(modifier) {
         TopAppBar(
             title = { Text("Sessions") },
@@ -416,9 +399,7 @@ private fun TreePane(
                 val unread = state.unreadCounts[session.id] ?: 0
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
                 val read = isSessionUpdateRead(session, state.readUpdates[session.id])
-                val children = remember(state.sessions) {
-                    childCount(state.sessions, session.id)
-                }
+                val children = remember(state.sessions) { childCount(state.sessions, session.id) }
                 val indent = (depth * 24).dp
                 ListItem(
                     headlineContent = {
@@ -447,8 +428,7 @@ private fun TreePane(
                                 else session.preview?.let { Text(it, maxLines = 2) }
                                 val kind =
                                     when {
-                                        session.endReason == "compression" ->
-                                            "Compression session"
+                                        session.endReason == "compression" -> "Compression session"
                                         session.parentSessionId != null -> "Child session"
                                         session.source?.isNotBlank() == true &&
                                             session.source != "mobile" -> session.source
@@ -476,9 +456,7 @@ private fun TreePane(
                             if (draft != null) Badge { Text("DRAFT") }
                             if (children > 0) {
                                 Badge {
-                                    Text(
-                                        "$children ${if (children == 1) "child" else "children"}"
-                                    )
+                                    Text("$children ${if (children == 1) "child" else "children"}")
                                 }
                             }
                             if (unread > 0) {
