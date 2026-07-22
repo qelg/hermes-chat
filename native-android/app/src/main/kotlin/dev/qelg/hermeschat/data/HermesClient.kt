@@ -318,6 +318,9 @@ class HermesClient(
                     )
                 "run.completed" -> {
                     runningToolIds.clear()
+                    (payload["usage"] as? JsonObject)?.let { usage ->
+                        eventChannel.send(event("session.info", mapOf("usage" to usage)))
+                    }
                     eventChannel.send(
                         event(
                             "message.complete",

@@ -19,7 +19,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -193,7 +195,7 @@ class HermesClientTest {
 
                     data: {"event":"tool.completed","run_id":"run-1","tool":"read_file","duration":0.1,"error":false}
 
-                    data: {"event":"run.completed","run_id":"run-1","output":"Hello","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}
+                    data: {"event":"run.completed","run_id":"run-1","output":"Hello","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"context_used":20000,"context_max":100000,"context_percent":20,"total":500,"calls":3}}
 
                     """
                         .trimIndent()
@@ -203,7 +205,7 @@ class HermesClientTest {
                 .setBody("""{"object":"list","data":[{"id":"api-1","last_active":10}]}"""),
         ) { client, server ->
             val events = mutableListOf<dev.qelg.hermeschat.data.GatewayEvent>()
-            val collector = launch { client.events.take(5).toList(events) }
+            val collector = launch { client.events.take(6).toList(events) }
 
             client.submit("api-1", "Hello", "deep")
             withTimeout(5_000) { collector.join() }
@@ -213,6 +215,7 @@ class HermesClientTest {
                     "message.delta",
                     "tool.start",
                     "tool.complete",
+                    "session.info",
                     "message.complete",
                     "session.inactive",
                 ),
@@ -225,7 +228,11 @@ class HermesClientTest {
                     true
             )
             assertEquals(events[1].payload["tool_call_id"], events[2].payload["tool_call_id"])
-            assertEquals("Hello", events[3].payload["text"]?.jsonPrimitive?.contentOrNull)
+            assertEquals(
+                20_000L,
+                events[3].payload["usage"]?.jsonObject?.get("context_used")?.jsonPrimitive?.long,
+            )
+            assertEquals("Hello", events[4].payload["text"]?.jsonPrimitive?.contentOrNull)
 
             val historyRequest = server.takeRequest()
             assertEquals("/api/sessions/api-1/messages", historyRequest.path)
