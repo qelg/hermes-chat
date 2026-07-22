@@ -3,7 +3,11 @@ package dev.qelg.hermeschat
 import android.app.Application
 import androidx.lifecycle.*
 import dev.qelg.hermeschat.data.*
+import java.io.Closeable
 import java.time.Instant
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -11,6 +15,14 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
+
+internal fun dispatchClose(
+    closeable: Closeable?,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    if (closeable == null) return
+    dispatcher.dispatch(EmptyCoroutineContext) { closeable.close() }
+}
 
 internal data class TokenUsageRefreshIdentity(
     val connectionVersion: Long,
@@ -143,7 +155,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
-        client?.close()
+        dispatchClose(client)
         runtimeId = null
         usageStoredId = null
         runtimeToStored.clear()
@@ -208,7 +220,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         usageJob?.cancel()
         connectionVersion++
         selectionVersion++
-        client?.close()
+        dispatchClose(client)
         client = null
         runtimeToStored.clear()
         sessionModelOverrides.clear()
@@ -983,7 +995,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
 
     override fun onCleared() {
-        client?.close()
+        dispatchClose(client)
+        client = null
         super.onCleared()
     }
 }
