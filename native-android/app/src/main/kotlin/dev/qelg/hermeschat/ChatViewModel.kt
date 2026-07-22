@@ -475,7 +475,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    fun select(session: HermesSession) {
+    fun select(session: HermesSession, selectedFromTree: Boolean = false) {
         if (state.value.active || state.value.connecting) return
         val api = client ?: return
         selectionJob?.cancel()
@@ -500,7 +500,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 reconnectSeconds = null,
                 tokenUsage = initialTokenUsage(session),
                 modelCatalog = modelCatalogForSession(it.modelCatalog, session),
-                treeParentId = null,
+                treeParentId = treeParentAfterSelection(it.treeParentId, selectedFromTree),
             )
         }
         selectionJob =

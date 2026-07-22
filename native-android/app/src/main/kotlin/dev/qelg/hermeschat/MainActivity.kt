@@ -472,7 +472,7 @@ private fun TreePane(
                             }
                         }
                     },
-                    modifier = Modifier.clickable { vm.select(session) },
+                    modifier = Modifier.clickable { vm.select(session, selectedFromTree = true) },
                     colors =
                         ListItemDefaults.colors(
                             containerColor =
